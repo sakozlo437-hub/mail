@@ -1,1 +1,3452 @@
-hello
+Script started on 2026-10-14 18:19:29+05:00 [TERM="xterm" TTY="/dev/pts/1" COLUMNS="80" LINES="24"]
+=== СТРУКТУРА ===
+./config/config.php
+./handlers/account_actions.php
+./handlers/certificate_actions.php
+./handlers/dkim_actions.php
+./handlers/domain_actions.php
+./handlers/server_actions.php
+./handlers/snapshot_actions.php
+./index.php
+./src/Database.php
+./src/Helpers/Flash.php
+./src/Services/AccountService.php
+./src/Services/CertificateService.php
+./src/Services/DkimService.php
+./src/Services/DomainService.php
+./src/Services/ServerService.php
+./src/Services/SnapshotService.php
+./src/Services/SnapshotStorage.php
+./src/Services/TlsService.php
+./src/SshClient.php
+./src/StalwartClient.php
+./views/domains.php
+./views/layout.php
+./views/overview.php
+./views/servers.php
+
+=== СОДЕРЖИМОЕ ФАЙЛОВ ===
+
+╔══ FILE: ./config/config.php ══╗
+<?php
+return [
+    'db' => [
+        'host' => 'localhost',
+        'dbname' => 'panel',
+        'user' => 'panel',
+        'password' => 'sicretpasword',
+    ],
+    'panel_auth' => [
+        'user' => 'adminpanel',
+        'password' => 'sicretpasword',
+    ],
+];
+
+
+╔══ FILE: ./handlers/account_actions.php ══╗
+<?php
+
+if ($_POST['action'] === 'create_account') {
+    try {
+        AccountService::create(
+            (int)$_POST['server_id'],
+            trim($_POST['domain_name'] ?? ''),
+            trim($_POST['local_part'] ?? ''),
+            trim($_POST['password'] ?? '')
+        );
+        Flash::set("✅ Ящик <strong>" . htmlspecialchars($_POST['local_part'] . '@' . $_POST['domain_name']) . "</strong> создан");
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+if ($_POST['action'] === 'delete_account') {
+    try {
+        AccountService::delete(
+            (int)$_POST['server_id'],
+            trim($_POST['account_id'] ?? '')
+        );
+        Flash::set("🗑️ Ящик удалён");
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+
+╔══ FILE: ./handlers/certificate_actions.php ══╗
+<?php
+
+if ($_POST['action'] === 'delete_certificate') {
+    try {
+        CertificateService::delete(
+            (int)$_POST['server_id'],
+            trim($_POST['cert_id'] ?? '')
+        );
+        Flash::set('🗑️ Сертификат удалён');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+
+╔══ FILE: ./handlers/dkim_actions.php ══╗
+<?php
+
+if ($_POST['action'] === 'update_dkim_headers') {
+    try {
+        $headers = array_values(array_filter(array_map('trim', explode(',', $_POST['headers'] ?? ''))));
+        DkimService::updateHeaders((int)$_POST['server_id'], trim($_POST['signature_id'] ?? ''), $headers);
+        Flash::set('✅ Заголовки DKIM обновлены');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+if ($_POST['action'] === 'update_dkim_selector') {
+    try {
+        DkimService::updateSelector(
+            (int)$_POST['server_id'],
+            trim($_POST['signature_id'] ?? ''),
+            trim($_POST['selector'] ?? '')
+        );
+        Flash::set('✅ Селектор DKIM обновлён');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+if ($_POST['action'] === 'delete_dkim') {
+    try {
+        DkimService::delete(
+            (int)$_POST['server_id'],
+            trim($_POST['signature_id'] ?? '')
+        );
+        Flash::set('🗑️ DKIM-подпись удалена');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+
+╔══ FILE: ./handlers/domain_actions.php ══╗
+<?php
+
+if ($_POST['action'] === 'create_domain') {
+    try {
+        $log = DomainService::create(
+            (int)$_POST['server_id'],
+            trim($_POST['domain_name'] ?? ''),
+            true,
+            trim($_POST['attach_ip'] ?? ''),
+            trim($_POST['ehlo'] ?? ''),
+            trim($_POST['extra_san'] ?? '')
+        );
+        Flash::set("✅ " . implode('<br>', $log));
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+if ($_POST['action'] === 'delete_domain') {
+    try {
+        DomainService::delete(
+            (int)$_POST['server_id'],
+            trim($_POST['domain_id'] ?? '')
+        );
+        Flash::set("🗑️ Домен удалён");
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=domains');
+    exit;
+}
+
+
+╔══ FILE: ./handlers/server_actions.php ══╗
+<?php
+
+if ($_POST['action'] === 'setup_ssh') {
+    try {
+        $name = trim($_POST['server_name'] ?? 'Server');
+        $sshHost = trim($_POST['ssh_host'] ?? '');
+        $sshPort = (int)($_POST['ssh_port'] ?? 22);
+        $sshUser = trim($_POST['ssh_user'] ?? 'root');
+        $sshPass = trim($_POST['ssh_password'] ?? '');
+
+        if (!$name || !$sshHost || !$sshPass) {
+            throw new Exception('Заполните название, SSH Host и пароль');
+        }
+
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("SELECT id FROM servers WHERE ssh_host = ? LIMIT 1");
+        $stmt->execute([$sshHost]);
+        $existing = $stmt->fetch();
+
+        if ($existing) {
+            $serverId = $existing['id'];
+            // Обновляем только SSH-поля (API не трогаем)
+            $stmt = $pdo->prepare("UPDATE servers SET name=?, ssh_port=?, ssh_user=?, ssh_password=?, ssh_configured=FALSE WHERE id=?");
+            $stmt->execute([$name, $sshPort, $sshUser, $sshPass, $serverId]);
+        } else {
+            // Создаём новый сервер только с SSH-данными
+            // API-поля пока пустые (заполнятся после прохождения мастера)
+            $stmt = $pdo->prepare("INSERT INTO servers (name, api_url, api_user, api_password, ssh_host, ssh_port, ssh_user, ssh_password, deploy_status) VALUES (?, '', '', '', ?, ?, ?, ?, 'ssh_only')");
+            $stmt->execute([$name, $sshHost, $sshPort, $sshUser, $sshPass]);
+            $serverId = (int)$pdo->lastInsertId();
+        }
+
+        // Подключаемся и генерируем ключ
+        ServerService::setupSsh($serverId, $sshHost, $sshPort, $sshUser, $sshPass);
+
+        Flash::set('✅ SSH подключён. Ключ сохранён. Теперь можно развернуть Stalwart (Шаг 2).');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'delete_server') {
+    ServerService::delete((int)$_POST['id']);
+    Flash::set('🗑️ Сервер удалён');
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'test_server') {
+    try {
+        $result = ServerService::test((int)$_POST['id']);
+        Flash::set(($result['success'] ? '✅ ' : '❌ ') . $result['message'], $result['success'] ? 'success' : 'error');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'set_primary') {
+    ServerService::setPrimary((int)$_POST['id']);
+    Flash::set('⭐ Сервер назначен основным');
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'add_ipv6') {
+    try {
+        $result = ServerService::addIpv6(
+            (int)$_POST['server_id'],
+            trim($_POST['ipv6'] ?? ''),
+            trim($_POST['interface'] ?? '')
+        );
+        Flash::set(($result['success'] ? '✅ ' : '❌ ') . $result['message'], $result['success'] ? 'success' : 'error');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'remove_ipv6') {
+    try {
+        $result = ServerService::removeIpv6(
+            (int)$_POST['server_id'],
+            trim($_POST['ipv6'] ?? ''),
+            trim($_POST['interface'] ?? 'eth0')
+        );
+        Flash::set(($result['success'] ? '🗑️ ' : '❌ ') . $result['message'], $result['success'] ? 'success' : 'error');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'clear_deploy_result') {
+    unset($_SESSION['deploy_result'], $_SESSION['deploy_full_log']);
+    header('Location: ?tab=servers');
+    exit;
+}
+
+
+╔══ FILE: ./handlers/snapshot_actions.php ══╗
+<?php
+
+if ($_POST['action'] === 'create_snapshot') {
+    try {
+        $type = $_POST['snapshot_type'] ?? 'bare';
+        $serverId = (int)$_POST['server_id'];
+        $name = trim($_POST['snapshot_name'] ?? '');
+        
+        $server = Database::getServer($serverId);
+        if (!$server) throw new Exception('Сервер не найден');
+        
+        // Генерируем snapshot через SnapshotService
+        $content = SnapshotService::create($serverId, $type);
+        
+        // Если имя не задано — генерируем
+        if (!$name) {
+            $name = $server['name'] . '_' . $type . '_' . date('Ymd_His');
+        }
+        
+        // Сохраняем в отдельную таблицу
+        SnapshotStorage::create($name, $server['name'], $type, $content);
+        
+        Flash::set("✅ Snapshot '{$name}' создан");
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'delete_snapshot') {
+    try {
+        $snapshotId = (int)$_POST['snapshot_id'];
+        SnapshotStorage::delete($snapshotId);
+        Flash::set('🗑️ Snapshot удалён');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+if ($_POST['action'] === 'deploy_stalwart') {
+    try {
+        $snapshotId = (int)($_POST['snapshot_id'] ?? 0);
+        $snapshotContent = null;
+        if ($snapshotId) {
+            $snap = SnapshotStorage::get($snapshotId);
+            $snapshotContent = $snap['content'] ?? null;
+        }
+
+        $result = SnapshotService::deployStalwart([
+            'ssh_host' => trim($_POST['ssh_host'] ?? ''),
+            'ssh_port' => (int)($_POST['ssh_port'] ?? 22),
+            'ssh_user' => trim($_POST['ssh_user'] ?? 'root'),
+            'ssh_password' => trim($_POST['ssh_password'] ?? ''),
+            'admin_password' => trim($_POST['admin_password'] ?? ''),
+            'snapshot' => $snapshotContent,
+        ]);
+
+        $_SESSION['deploy_result'] = $result;
+        $_SESSION['deploy_full_log'] = $result['full_log'];
+        header('Location: ?tab=servers');
+        exit;
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+        header('Location: ?tab=servers');
+        exit;
+    }
+}
+
+if ($_POST['action'] === 'finalize_deploy') {
+    try {
+        $result = SnapshotService::finalizeDeploy(
+            (int)$_POST['server_id'],
+            trim($_POST['admin_user'] ?? 'admin'),
+            trim($_POST['admin_password'] ?? '')
+        );
+        Flash::set('✅ Развёртывание завершено!');
+    } catch (Exception $e) {
+        Flash::set('❌ ' . $e->getMessage(), 'error');
+    }
+    header('Location: ?tab=servers');
+    exit;
+}
+
+
+╔══ FILE: ./index.php ══╗
+<?php
+session_start();
+
+require_once __DIR__ . '/src/Database.php';
+require_once __DIR__ . '/src/StalwartClient.php';
+require_once __DIR__ . '/src/SshClient.php';
+require_once __DIR__ . '/src/Helpers/Flash.php';
+require_once __DIR__ . '/src/Services/ServerService.php';
+require_once __DIR__ . '/src/Services/DomainService.php';
+require_once __DIR__ . '/src/Services/AccountService.php';
+require_once __DIR__ . '/src/Services/DkimService.php';
+require_once __DIR__ . '/src/Services/CertificateService.php';
+require_once __DIR__ . '/src/Services/SnapshotService.php';
+require_once __DIR__ . '/src/Services/SnapshotStorage.php';
+require_once __DIR__ . '/src/Services/TlsService.php';
+
+$activeTab = $_GET['tab'] ?? 'overview';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    require __DIR__ . '/handlers/server_actions.php';
+    require __DIR__ . '/handlers/domain_actions.php';
+    require __DIR__ . '/handlers/account_actions.php';
+    require __DIR__ . '/handlers/dkim_actions.php';
+    require __DIR__ . '/handlers/certificate_actions.php';
+    require __DIR__ . '/handlers/snapshot_actions.php';
+}
+
+$flash = Flash::get();
+$servers = Database::getAllServers();
+$primaryServer = Database::getPrimaryServer();
+
+$serverData = [];
+foreach ($servers as $s) {
+    $client = new StalwartClient($s['api_url'], $s['api_user'], $s['api_password']);
+    $data = [
+        'server'     => $s,
+        'domains'    => [],
+        'accounts'   => [],
+        'dkim'       => [],
+        'certs'      => [],
+        'strategies' => [],
+        'error'      => null,
+        'temp_admin_user' => $s['temp_admin_user'] ?? null,
+        'temp_admin_password' => $s['temp_admin_password'] ?? null,
+        'admin_url' => $s['admin_url'] ?? null,
+        'deploy_status' => $s['deploy_status'] ?? null,
+        'stalwart_snapshot_full' => $s['stalwart_snapshot_full'] ?? null,
+        'stalwart_snapshot_bare' => $s['stalwart_snapshot_bare'] ?? null,
+        'snapshot_full_created_at' => $s['snapshot_full_created_at'] ?? null,
+        'snapshot_bare_created_at' => $s['snapshot_bare_created_at'] ?? null,
+    ];
+    try {
+        $data['domains']    = $client->getDomains();
+        $data['accounts']   = $client->getAccounts();
+        $data['dkim']       = $client->getDkimSignatures();
+        $data['certs']      = $client->getCertificates();
+        $data['strategies'] = $client->getConnectionStrategies();
+    } catch (Exception $e) {
+        $data['error'] = $e->getMessage();
+    }
+    $serverData[$s['id']] = $data;
+}
+
+require __DIR__ . '/views/layout.php';
+
+
+╔══ FILE: ./src/Database.php ══╗
+<?php
+
+class Database
+{
+    private static ?PDO $pdo = null;
+
+    public static function get(): PDO
+    {
+        if (self::$pdo === null) {
+            $config = require __DIR__ . '/../config/config.php';
+            $db = $config['db'];
+            $dsn = "pgsql:host={$db['host']};dbname={$db['dbname']}";
+            self::$pdo = new PDO($dsn, $db['user'], $db['password'], [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ]);
+        }
+        return self::$pdo;
+    }
+
+    public static function getAllServers(): array
+    {
+        return self::get()->query("SELECT * FROM servers ORDER BY id DESC")->fetchAll();
+    }
+
+    public static function addServer(string $name, string $apiUrl, string $apiUser, string $apiPassword): bool
+    {
+        $stmt = self::get()->prepare(
+            "INSERT INTO servers (name, api_url, api_user, api_password) VALUES (?, ?, ?, ?)"
+        );
+        return $stmt->execute([$name, $apiUrl, $apiUser, $apiPassword]);
+    }
+
+    public static function deleteServer(int $id): bool
+    {
+        $stmt = self::get()->prepare("DELETE FROM servers WHERE id = ?");
+        return $stmt->execute([$id]);
+    }
+
+    public static function getServer(int $id): ?array
+    {
+        $stmt = self::get()->prepare("SELECT * FROM servers WHERE id = ?");
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public static function setPrimaryServer(int $id): bool
+    {
+        $pdo = self::get();
+        $pdo->exec("UPDATE servers SET is_primary = FALSE");
+        $stmt = $pdo->prepare("UPDATE servers SET is_primary = TRUE WHERE id = ?");
+        return $stmt->execute([$id]);
+    }
+
+    public static function getPrimaryServer(): ?array
+    {
+        $row = self::get()->query("SELECT * FROM servers WHERE is_primary = TRUE LIMIT 1")->fetch();
+        return $row ?: null;
+    }
+}
+
+
+╔══ FILE: ./src/Helpers/Flash.php ══╗
+<?php
+
+class Flash
+{
+    public static function set(string $message, string $type = 'success'): void
+    {
+        $_SESSION['flash'] = ['message' => $message, 'type' => $type];
+    }
+
+    public static function get(): ?array
+    {
+        if (!empty($_SESSION['flash'])) {
+            $flash = $_SESSION['flash'];
+            unset($_SESSION['flash']);
+            return $flash;
+        }
+        return null;
+    }
+}
+
+
+╔══ FILE: ./src/Services/AccountService.php ══╗
+<?php
+
+class AccountService
+{
+    public static function create(int $serverId, string $domainName, string $localPart, string $password): void
+    {
+        if (!$domainName || !$localPart || !$password) {
+            throw new Exception('Заполните все поля');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        $domainId = $client->getDomainIdByName($domainName);
+        if (!$domainId) {
+            throw new Exception("Домен $domainName не найден на сервере");
+        }
+        $client->createAccount($localPart, $domainId, $password);
+    }
+
+    public static function listByServer(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getAccounts();
+    }
+
+    public static function delete(int $serverId, string $accountId): void
+    {
+        if (!$accountId) {
+            throw new Exception('Не указан ID ящика');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        $client->deleteAccount($accountId);
+    }
+}
+
+
+╔══ FILE: ./src/Services/CertificateService.php ══╗
+<?php
+
+class CertificateService
+{
+    public static function listByServer(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getCertificates();
+    }
+
+    public static function delete(int $serverId, string $certId): void
+    {
+        if (!$certId) {
+            throw new Exception('Не указан ID сертификата');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+
+        // Сначала отвязываем от defaultCertificateId (если привязан)
+        $client->unlinkCertificateFromDefaults($certId);
+        // Удаляем
+        $client->deleteCertificate($certId);
+    }
+}
+
+
+╔══ FILE: ./src/Services/DkimService.php ══╗
+<?php
+
+class DkimService
+{
+    public static function listByServer(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getDkimSignatures();
+    }
+
+    public static function updateHeaders(int $serverId, string $signatureId, array $headers): void
+    {
+        if (!$signatureId || empty($headers)) {
+            throw new Exception('Заполните все поля');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        $client->updateDkimHeaders($signatureId, $headers);
+    }
+
+    public static function updateSelector(int $serverId, string $signatureId, string $selector): void
+    {
+        if (!$signatureId || !$selector) {
+            throw new Exception('Заполните все поля');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        $client->updateDkimSelector($signatureId, $selector);
+    }
+
+    public static function delete(int $serverId, string $signatureId): void
+    {
+        if (!$signatureId) {
+            throw new Exception('Не указан ID подписи');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        $client->deleteDkimSignature($signatureId);
+    }
+}
+
+
+╔══ FILE: ./src/Services/DomainService.php ══╗
+<?php
+
+class DomainService
+{
+    public static function create(int $serverId, string $domainName, bool $generateDkim = true, string $attachIp = '', string $ehlo = '', string $extraSan = ''): array
+    {
+        if (!$domainName) {
+            throw new Exception('Введите имя домена');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        $domainId = $client->createDomain($domainName);
+        if (!$domainId) {
+            throw new Exception('Не удалось создать домен');
+        }
+
+        $log = ["Домен $domainName создан (ID: $domainId)"];
+
+        // 1. Создаём ящик postmaster@домен (нужен для ACME contact)
+        try {
+            $client->createAccount('postmaster', $domainId, bin2hex(random_bytes(16)));
+            $log[] = "Ящик postmaster@$domainName создан";
+        } catch (Exception $e) {
+            $log[] = "postmaster ошибка: " . $e->getMessage();
+        }
+
+        // 2. DKIM: Stalwart создаёт автоматически при создании домена.
+        // Нам не нужно создавать свои — иначе будет дублирование.
+        $log[] = "DKIM создан автоматически Stalwart";
+
+        // 3. Привязываем домен к существующему ACME-провайдеру
+        try {
+            $providers = $client->getAcmeProviders();
+            if (empty($providers)) {
+                throw new Exception('Нет ни одного ACME-провайдера. Создайте в WebAdmin: Settings → TLS → ACME Providers');
+            }
+
+            // Берём первый провайдер (обычно Let's Encrypt)
+            $acmeId = $providers[0]['id'];
+            $log[] = "Используем ACME-провайдер: $acmeId";
+
+            $sanList = [$domainName, 'mail.' . $domainName];
+            if ($extraSan) {
+                $sanList[] = trim($extraSan);
+            }
+            $client->attachDomainToAcme($domainId, $acmeId, $sanList);
+            $log[] = "Домен привязан к ACME (SAN: " . implode(', ', $sanList) . ")";
+        } catch (Exception $e) {
+            $log[] = "ACME ошибка: " . $e->getMessage();
+        }
+
+        // 4. Привязываем к IP
+        if ($attachIp) {
+            try {
+                if (!$ehlo) {
+                    $ehlo = 'mail.' . $domainName;
+                }
+                $strategyName = 'ipv6-for-' . str_replace('.', '-', $domainName);
+                $strategyId = $client->createConnectionStrategy($strategyName, $ehlo, $attachIp);
+                $log[] = "Стратегия $strategyName создана (ID: $strategyId)";
+
+                $client->addOutboundRule($domainName, $strategyName);
+                $log[] = "Правило для $domainName → $strategyName добавлено";
+            } catch (Exception $e) {
+                $log[] = "Стратегия ошибка: " . $e->getMessage();
+            }
+        }
+
+        return $log;
+    }
+
+    public static function listByServer(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getDomains();
+    }
+
+    public static function delete(int $serverId, string $domainId): array
+    {
+        if (!$domainId) {
+            throw new Exception('Не указан ID домена');
+        }
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+
+        $log = [];
+
+        // Получаем имя домена
+        $domains = $client->getDomains();
+        $domainName = '';
+        foreach ($domains as $name => $id) {
+            if ($id === $domainId) {
+                $domainName = $name;
+                break;
+            }
+        }
+
+        // 1. Удаляем правило из Outbound Strategy
+        if ($domainName) {
+            try {
+                $client->removeOutboundRuleByDomain($domainName);
+                $log[] = "Правило для $domainName удалено из Outbound Strategy";
+            } catch (Exception $e) {
+                $log[] = "Outbound ошибка: " . $e->getMessage();
+            }
+        }
+
+        // 2. Удаляем Connection Strategy
+        if ($domainName) {
+            try {
+                $strategyName = 'ipv6-for-' . str_replace('.', '-', $domainName);
+                $strategy = $client->findStrategyByName($strategyName);
+                if ($strategy) {
+                    $client->deleteConnectionStrategy($strategy['id']);
+                    $log[] = "Стратегия $strategyName удалена";
+                }
+            } catch (Exception $e) {
+                $log[] = "Стратегия ошибка: " . $e->getMessage();
+            }
+        }
+
+        // 3. Удаляем DKIM-подписи
+        $dkimList = $client->getDkimSignatures();
+        foreach ($dkimList as $sig) {
+            if ($sig['domainId'] === $domainId) {
+                try {
+                    $client->deleteDkimSignature($sig['id']);
+                    $log[] = "Удалена DKIM: {$sig['selector']}";
+                } catch (Exception $e) {
+                    $log[] = "DKIM ошибка: " . $e->getMessage();
+                }
+            }
+        }
+
+        // 4. Удаляем аккаунты
+        $accounts = $client->getAccounts();
+        foreach ($accounts as $acc) {
+            if ($acc['domainId'] === $domainId) {
+                try {
+                    $client->deleteAccount($acc['id']);
+                    $log[] = "Удалён ящик: {$acc['name']}";
+                } catch (Exception $e) {
+                    $log[] = "Ящик ошибка: " . $e->getMessage();
+                }
+            }
+        }
+
+        // 5. Удаляем сертификаты
+        if ($domainName) {
+            $certs = $client->getCertificates();
+            foreach ($certs as $cert) {
+                $sanList = $cert['subjectAlternativeNames'];
+                $match = false;
+                foreach ($sanList as $san) {
+                    if ($san === $domainName || $san === 'mail.' . $domainName) {
+                        $match = true;
+                        break;
+                    }
+                }
+                if ($match) {
+                    try {
+                        $client->unlinkCertificateFromDefaults($cert['id']);
+                        $client->deleteCertificate($cert['id']);
+                        $log[] = "Удалён сертификат: " . implode(', ', $sanList);
+                    } catch (Exception $e) {
+                        $log[] = "Сертификат ошибка: " . $e->getMessage();
+                    }
+                }
+            }
+        }
+
+        // 6. Удаляем ACME-провайдер, если он был создан для этого домена
+        if ($domainName) {
+            try {
+                $providerName = 'letsencrypt-' . str_replace('.', '-', $domainName);
+                // ACME-провайдеры не имеют метода поиска по имени — ищем через get
+                // Пока просто логируем, что нужно удалить вручную
+                $log[] = "ACME-провайдер $providerName — проверь вручную (Settings → TLS → ACME Providers)";
+            } catch (Exception $e) {
+                // ignore
+            }
+        }
+
+        // 7. Удаляем сам домен
+        try {
+            $client->deleteDomain($domainId);
+            $log[] = "Домен удалён";
+        } catch (Exception $e) {
+            throw new Exception("Ошибка удаления домена: " . $e->getMessage() . " | Лог: " . implode('; ', $log));
+        }
+
+        return $log;
+    }
+}
+
+
+╔══ FILE: ./src/Services/ServerService.php ══╗
+<?php
+
+class ServerService
+{
+    public static function add(string $name, string $apiUrl, string $apiUser, string $apiPassword): void
+    {
+        if (!$name || !$apiUrl || !$apiUser || !$apiPassword) {
+            throw new Exception('Заполните все поля');
+        }
+        Database::addServer($name, $apiUrl, $apiUser, $apiPassword);
+    }
+
+    public static function delete(int $id): void
+    {
+        Database::deleteServer($id);
+    }
+
+    public static function setPrimary(int $id): void
+    {
+        Database::setPrimaryServer($id);
+    }
+
+    public static function test(int $id): array
+    {
+        $server = Database::getServer($id);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->testConnection();
+    }
+
+    public static function getStrategiesForServer(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) return [];
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getConnectionStrategies();
+    }
+
+    public static function getOutboundStrategyForServer(int $serverId): ?array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) return null;
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getOutboundStrategy();
+    }
+
+    /**
+     * Получить IPv6-адреса из Netplan на сервере Stalwart (через SSH).
+     */
+    public static function getNetplanIps(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server || empty($server['ssh_host'])) {
+            return [];
+        }
+        try {
+            $ssh = new SshClient(
+                $server['ssh_host'],
+                (int)$server['ssh_port'],
+                $server['ssh_user'],
+                $server['ssh_password']
+            );
+            $ssh->connect();
+            return $ssh->getNetplanIps('eth0');
+        } catch (Exception $e) {
+            return ['_error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Удалить IP из Connection Strategy.
+     */
+    public static function removeIpFromStrategy(int $serverId, string $strategyId, string $ip): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) throw new Exception('Сервер не найден');
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+
+        $log = [];
+
+        // 1. Убираем IP из стратегии
+        $client->removeIpFromConnectionStrategy($strategyId, $ip);
+        $log[] = "IP удалён из sourceIps";
+
+        // 2. Проверяем, остались ли IP в стратегии
+        $strategies = $client->getConnectionStrategies();
+        $strategy = null;
+        foreach ($strategies as $st) {
+            if ($st['id'] === $strategyId) {
+                $strategy = $st;
+                break;
+            }
+        }
+
+        if ($strategy && empty($strategy['sourceIps'])) {
+            // 3. Удаляем правило из Outbound Strategy (если было)
+            try {
+                $client->removeOutboundRule($strategy['name']);
+                $log[] = "Правило в Outbound Strategy удалено";
+            } catch (Exception $e) {
+                $log[] = "Outbound: " . $e->getMessage();
+            }
+
+            // 4. Удаляем саму стратегию
+            $client->deleteConnectionStrategy($strategyId);
+            $log[] = "Стратегия удалена";
+        }
+
+        return $log;
+    }
+
+    public static function setupSsh(int $serverId, string $sshHost, int $sshPort, string $sshUser, string $sshPassword): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) throw new Exception('Сервер не найден');
+        if (!$sshHost || !$sshPassword) throw new Exception('Заполните SSH Host и пароль');
+
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("UPDATE servers SET ssh_host=?, ssh_port=?, ssh_user=?, ssh_password=?, ssh_configured=FALSE WHERE id=?");
+        $stmt->execute([$sshHost, $sshPort, $sshUser, $sshPassword, $serverId]);
+
+        $ssh = new SshClient($sshHost, $sshPort, $sshUser, $sshPassword);
+        $ssh->connect();
+
+        $pyResult = $ssh->ensurePythonYaml();
+        $ssh2Installed = $ssh->isPackageInstalled('php-ssh2');
+
+        $keyPair = $ssh->generateKeyPair();
+        $ssh->setupSshKey($keyPair['public']);
+
+        $stmt = $pdo->prepare("UPDATE servers SET ssh_private_key=?, ssh_public_key=?, ssh_configured=TRUE WHERE id=?");
+        $stmt->execute([$keyPair['private'], $keyPair['public'], $serverId]);
+
+        $msg = "SSH настроен. Ключ сгенерирован.";
+        if ($pyResult['success']) {
+            $msg .= " python3-yaml готов.";
+        } else {
+            $msg .= " ВНИМАНИЕ: " . $pyResult['message'];
+        }
+        $msg .= " php-ssh2 на удалённом сервере: " . ($ssh2Installed ? 'да' : 'нет');
+
+        return ['success' => true, 'message' => $msg];
+    }
+
+    public static function addIpv6(int $serverId, string $ipv6, string $interface = ''): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) throw new Exception('Сервер не найден');
+        if (empty($server['ssh_host'])) throw new Exception('SSH не настроен. Сначала настройте SSH-доступ.');
+
+        $ssh = new SshClient(
+            $server['ssh_host'],
+            (int)$server['ssh_port'],
+            $server['ssh_user'],
+            $server['ssh_password']
+        );
+        $ssh->connect();
+
+        return $ssh->addIpv6($ipv6, $interface);
+    }
+
+    /**
+     * Удалить IPv6-адрес с сервера Stalwart через SSH.
+     */
+    public static function removeIpv6(int $serverId, string $ipv6, string $interface = ''): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) throw new Exception('Сервер не найден');
+        if (empty($server['ssh_host'])) throw new Exception('SSH не настроен');
+
+        $ssh = new SshClient(
+            $server['ssh_host'],
+            (int)$server['ssh_port'],
+            $server['ssh_user'],
+            $server['ssh_password']
+        );
+        $ssh->connect();
+
+        return $ssh->removeIpv6($ipv6, $interface ?: 'eth0');
+    }
+
+    /**
+     * Получить домены, привязанные к IP.
+     */
+    public static function getDomainsByIpForServer(int $serverId, string $ip): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) return [];
+        try {
+            $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+            return $client->getDomainsByIp($ip);
+        } catch (Exception $e) {
+            return ['_error' => $e->getMessage()];
+        }
+    }
+}
+
+
+╔══ FILE: ./src/Services/SnapshotService.php ══╗
+<?php
+
+class SnapshotService
+{
+    /**
+     * Сделать snapshot на сервере Stalwart и сохранить в БД.
+     * $type = 'full' — полный (как есть), 'bare' — голый (без доменов/IP/DKIM/TLS).
+     */
+    public static function create(int $serverId, string $type = 'bare'): string
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) throw new Exception('Сервер не найден');
+        if (empty($server['ssh_host'])) throw new Exception('SSH не настроен');
+
+        $ssh = new SshClient(
+            $server['ssh_host'],
+            (int)$server['ssh_port'],
+            $server['ssh_user'],
+            $server['ssh_password']
+        );
+        $ssh->connect();
+
+        $path = '/tmp/stalwart-snapshot-' . date('Ymd_His') . '.ndjson';
+        $env = "STALWART_URL={$server['api_url']} STALWART_USER={$server['api_user']} STALWART_PASSWORD='" . $server['api_password'] . "'";
+
+        if ($type === 'full') {
+            // Полный snapshot — все объекты
+            $objects = 'SystemSettings Domain DkimSignature Certificate MtaConnectionStrategy MtaRoute MtaDeliverySchedule MtaOutboundStrategy AcmeProvider Role Tenant';
+            $allowUnresolved = '--allow-unresolved Directory,DnsServer,DnsResolver,MtaVirtualQueue,HttpLookup,BlockedIp,AllowedIp,ApiKey,AppPassword,Account,AccountPassword,AccountSettings,Bootstrap';
+        } else {
+            // Голый snapshot — только базовые настройки
+            $objects = 'SystemSettings MtaRoute MtaDeliverySchedule MtaOutboundStrategy AcmeProvider Role Tenant';
+            $allowUnresolved = '--allow-unresolved Directory,DnsServer,DnsResolver,MtaVirtualQueue,HttpLookup,BlockedIp,AllowedIp,ApiKey,AppPassword,Account,AccountPassword,AccountSettings,Bootstrap';
+        }
+
+        $cmd = "source /root/.cargo/env && {$env} stalwart-cli snapshot {$objects} {$allowUnresolved} --output {$path} 2>&1";
+
+        $result = $ssh->exec($cmd);
+        if (strpos($result['output'], 'error') !== false) {
+            throw new Exception('Ошибка snapshot: ' . $result['output']);
+        }
+
+        $content = $ssh->exec("cat {$path}");
+        if (empty(trim($content['output']))) {
+            throw new Exception('Snapshot пустой');
+        }
+
+        // Для 'bare' — очищаем connection в MtaOutboundStrategy
+        $lines = [];
+        foreach (explode("\n", $content['output']) as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+            $obj = json_decode($line, true);
+            if ($obj === null) continue;
+
+            if ($type === 'bare'
+                && ($obj['object'] ?? '') === 'MtaOutboundStrategy'
+                && isset($obj['value']['connection']['match'])) {
+                $obj['value']['connection'] = ['else' => "'default'"];
+            }
+            $lines[] = json_encode($obj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        $cleanSnapshot = implode("\n", $lines);
+
+        // Сохраняем в БД
+        $pdo = Database::get();
+        if ($type === 'full') {
+            $stmt = $pdo->prepare("UPDATE servers SET stalwart_snapshot_full = ?, snapshot_full_created_at = NOW() WHERE id = ?");
+        } else {
+            $stmt = $pdo->prepare("UPDATE servers SET stalwart_snapshot_bare = ?, snapshot_bare_created_at = NOW() WHERE id = ?");
+        }
+        $stmt->execute([$cleanSnapshot, $serverId]);
+
+        $ssh->exec("rm -f {$path}");
+
+        return $cleanSnapshot;
+    }
+
+    /**
+     * Получить snapshot из БД.
+     * $type = 'full' | 'bare'
+     */
+    public static function get(int $serverId, string $type = 'bare'): ?string
+    {
+        $pdo = Database::get();
+        $column = ($type === 'full') ? 'stalwart_snapshot_full' : 'stalwart_snapshot_bare';
+        $stmt = $pdo->prepare("SELECT {$column} FROM servers WHERE id = ?");
+        $stmt->execute([$serverId]);
+        $row = $stmt->fetch();
+        return $row[$column] ?? null;
+    }
+
+    /**
+     * Удалить snapshot из БД.
+     */
+    public static function delete(int $serverId, string $type = 'bare'): void
+    {
+        $pdo = Database::get();
+        if ($type === 'full') {
+            $stmt = $pdo->prepare("UPDATE servers SET stalwart_snapshot_full = NULL, snapshot_full_created_at = NULL WHERE id = ?");
+        } else {
+            $stmt = $pdo->prepare("UPDATE servers SET stalwart_snapshot_bare = NULL, snapshot_bare_created_at = NULL WHERE id = ?");
+        }
+        $stmt->execute([$serverId]);
+    }
+
+    /**
+     * Развернуть Stalwart на новом сервере.
+     */
+    public static function deployStalwart(array $installData): array
+    {
+        // Ищем сервер по SSH-хосту для использования ключа
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("SELECT * FROM servers WHERE ssh_host = ? LIMIT 1");
+        $stmt->execute([$installData['ssh_host']]);
+        $existingServer = $stmt->fetch();
+
+        if ($existingServer && !empty($existingServer['ssh_private_key'])) {
+            $ssh = new SshClient(
+                $existingServer['ssh_host'],
+                (int)$existingServer['ssh_port'],
+                $existingServer['ssh_user'],
+                $existingServer['ssh_password'],
+                $existingServer['ssh_private_key']
+            );
+        } else {
+            $ssh = new SshClient(
+                $installData['ssh_host'],
+                (int)$installData['ssh_port'],
+                $installData['ssh_user'],
+                $installData['ssh_password']
+            );
+        }
+        $ssh->connect();
+
+        $log = [];
+        $fullLog = "=== Развёртывание Stalwart на {$installData['ssh_host']} ===\n";
+        $fullLog .= "Начало: " . date('Y-m-d H:i:s') . "\n\n";
+
+        $logLine = function($msg) use (&$log, &$fullLog) {
+            $log[] = $msg;
+            $fullLog .= "[" . date('H:i:s') . "] " . $msg . "\n";
+        };
+
+        // 1. apt update
+        $logLine("apt update...");
+        $ssh->exec("DEBIAN_FRONTEND=noninteractive apt-get update -y 2>&1");
+
+        // 2. Зависимости
+        $logLine("Установка зависимостей...");
+        $ssh->exec("DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget ca-certificates 2>&1");
+
+        // 3. Создаём директории ДО запуска
+        $logLine("Создание директорий /var/lib/stalwart и /etc/stalwart...");
+        $ssh->exec("mkdir -p /var/lib/stalwart /etc/stalwart");
+
+        // 4. Устанавливаем Stalwart (создаёт пользователя stalwart)
+        $logLine("Скачивание install.sh...");
+        $ssh->exec("curl --proto '=https' --tlsv1.2 -sSf https://get.stalw.art/install.sh -o /tmp/stalwart-install.sh 2>&1");
+        $logLine("Установка Stalwart...");
+        $ssh->exec("DEBIAN_FRONTEND=noninteractive sh /tmp/stalwart-install.sh /opt/stalwart 2>&1");
+
+        // 5. ТЕПЕРЬ меняем владельца (пользователь stalwart уже создан)
+        $logLine("Установка прав на директории...");
+        $ssh->exec("chown -R stalwart:stalwart /var/lib/stalwart /etc/stalwart");
+        $ssh->exec("chmod -R u+rwx /var/lib/stalwart /etc/stalwart");
+        
+        // Также для /opt/stalwart
+        $ssh->exec("chown -R stalwart:stalwart /opt/stalwart 2>/dev/null || true");
+        $logLine("Права установлены");
+
+        // 4. Открываем порт 8080
+        $logLine("Проверка порта 8080...");
+        $ssh->exec("DEBIAN_FRONTEND=noninteractive apt-get install -y ufw 2>&1");
+        $ssh->exec("ufw allow 8080/tcp 2>&1");
+        $logLine("Порт 8080 открыт");
+
+        // 5. Скачиваем установщик
+        $logLine("Скачивание install.sh...");
+        $ssh->exec("curl --proto '=https' --tlsv1.2 -sSf https://get.stalw.art/install.sh -o /tmp/stalwart-install.sh 2>&1");
+
+        // 6. Устанавливаем Stalwart
+        $logLine("Установка Stalwart...");
+        $ssh->exec("DEBIAN_FRONTEND=noninteractive sh /tmp/stalwart-install.sh /opt/stalwart 2>&1");
+
+        // 7. Включаем Recovery Mode
+        $logLine("Включение Recovery Mode...");
+        $ssh->exec("mkdir -p /opt/stalwart/etc");
+        $ssh->exec("echo 'STALWART_RECOVERY_MODE=1' > /opt/stalwart/etc/stalwart.env");
+        $logLine("Recovery Mode включён");
+
+        // 8. Перезапускаем — генерируется пароль
+        $logLine("Перезапуск сервиса...");
+        $ssh->exec("systemctl restart stalwart 2>&1");
+        sleep(8);
+
+        // 9. Читаем пароль из логов
+        $logLine("Чтение пароля из логов...");
+        $logs = $ssh->exec("journalctl -u stalwart --since '1 minute ago' --no-pager | grep -A5 'bootstrap mode' | grep 'password:' | tail -1");
+        $logOutput = trim($logs['output']);
+        
+        $tempPassword = '';
+        if (preg_match('/password:\s*(\S+)/', $logOutput, $m)) {
+            $tempPassword = $m[1];
+            $logLine("Пароль найден: " . $tempPassword);
+        } else {
+            $logLine("⚠️ Пароль не найден в логах");
+        }
+
+        // 10. Сохраняем в БД
+        if ($tempPassword && $existingServer) {
+            $pdo = Database::get();
+            $stmt = $pdo->prepare("UPDATE servers SET temp_admin_user = 'admin', temp_admin_password = ?, admin_url = ?, deploy_status = 'bootstrap' WHERE id = ?");
+            $stmt->execute([$tempPassword, "http://{$installData['ssh_host']}:8080/admin", $existingServer['id']]);
+        }
+
+        // 11. Если передан snapshot — применяем
+        if (!empty($installData['snapshot']) && $tempPassword) {
+            $logLine("Загрузка snapshot...");
+            $encoded = base64_encode($installData['snapshot']);
+            $chunks = str_split($encoded, 4096);
+            $ssh->exec("> /tmp/stalwart-snapshot.b64");
+            foreach ($chunks as $chunk) {
+                $ssh->exec("echo '{$chunk}' >> /tmp/stalwart-snapshot.b64");
+            }
+            $ssh->exec("base64 -d /tmp/stalwart-snapshot.b64 > /tmp/stalwart-snapshot.ndjson");
+            
+            // Применяем через JMAP API
+            $logLine("Применение snapshot через JMAP API...");
+            try {
+                $client = new StalwartClient('http://' . $installData['ssh_host'] . ':8080', 'admin', $tempPassword);
+                $test = $client->testConnection();
+                if ($test['success']) {
+                    $applyLog = $client->applySnapshot($installData['snapshot']);
+                    foreach ($applyLog as $entry) {
+                        $logLine($entry);
+                    }
+                } else {
+                    $logLine("⚠️ API: " . $test['message']);
+                }
+            } catch (Exception $e) {
+                $logLine("⚠️ Ошибка apply: " . $e->getMessage());
+            }
+        }
+
+        // ВАЖНО: НЕ перезапускаем сервис после apply, чтобы пароль не изменился!
+        $logLine("Развёртывание завершено. Recovery Mode остаётся включённым для ручного прохождения мастера.");
+
+        $fullLog .= "\n=== Завершено: " . date('Y-m-d H:i:s') . " ===\n";
+
+        // Сохраняем лог
+        if ($existingServer) {
+            $stmt = $pdo->prepare("UPDATE servers SET deploy_log = ?, deploy_started_at = ?, deploy_finished_at = NOW() WHERE id = ?");
+            $stmt->execute([$fullLog, date('Y-m-d H:i:s'), $existingServer['id']]);
+        }
+
+        return [
+            'success' => true,
+            'admin_url' => "http://{$installData['ssh_host']}:8080/admin",
+            'username' => 'admin',
+            'password' => $tempPassword,
+            'log' => $log,
+            'full_log' => $fullLog,
+        ];
+    }
+
+    /**
+     * Завершить развёртывание: сохранить постоянный пароль, отключить Recovery Mode, перезапустить.
+     */
+    public static function finalizeDeploy(int $serverId, string $adminUser, string $adminPassword): array
+    {
+        $log = [];
+
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+
+        // Формируем API URL из ssh_host
+        $apiUrl = 'http://' . $server['ssh_host'] . ':8080';
+
+        // ВАЖНО: сохраняем api_url, api_user, api_password ПЕРВЫМ ДЕЛОМ
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("UPDATE servers SET api_url = ?, api_user = ?, api_password = ?, deploy_status = 'ready' WHERE id = ?");
+        $stmt->execute([$apiUrl, $adminUser, $adminPassword, $serverId]);
+        $log[] = "✅ API URL: {$apiUrl}";
+        $log[] = "✅ Логин: {$adminUser}";
+        $log[] = "✅ Пароль сохранён";
+        $log[] = "✅ Статус: ready";
+
+        // Проверяем JMAP сразу
+        try {
+            $client = new StalwartClient($apiUrl, $adminUser, $adminPassword);
+            $test = $client->testConnection();
+            if ($test['success']) {
+                $log[] = "✅ JMAP работает: " . $test['message'];
+            } else {
+                $log[] = "⚠️ JMAP: " . $test['message'];
+            }
+        } catch (Exception $e) {
+            $log[] = "⚠️ JMAP ошибка: " . $e->getMessage();
+        }
+
+        // Теперь SSH-операции (не критично)
+        if (!empty($server['ssh_host'])) {
+            try {
+                $ssh = new SshClient(
+                    $server['ssh_host'],
+                    (int)($server['ssh_port'] ?? 22),
+                    $server['ssh_user'] ?? 'root',
+                    $server['ssh_password'] ?? null,
+                    $server['ssh_private_key'] ?? null
+                );
+                $ssh->connect();
+                $log[] = "SSH подключён";
+
+                // Отключаем Recovery Mode
+                $ssh->exec("test -f /opt/stalwart/etc/stalwart.env && echo '' > /opt/stalwart/etc/stalwart.env || true");
+                $log[] = "Recovery Mode отключён";
+
+                $ssh->exec("systemctl restart stalwart 2>&1");
+                sleep(5);
+                $log[] = "Stalwart перезапущен";
+
+                $check = $ssh->exec("systemctl is-active stalwart 2>&1");
+                if (trim($check['output']) === 'active') {
+                    $log[] = "✅ Stalwart активен";
+                } else {
+                    $log[] = "⚠️ Статус: " . trim($check['output']);
+                }
+            } catch (Exception $e) {
+                $log[] = "⚠️ SSH ошибка: " . $e->getMessage();
+            }
+        }
+
+        return ['success' => true, 'log' => $log];
+    }
+}
+
+
+╔══ FILE: ./src/Services/SnapshotStorage.php ══╗
+<?php
+
+class SnapshotStorage
+{
+    /**
+     * Создать snapshot в отдельной таблице.
+     */
+    public static function create(string $name, string $serverName, string $type, string $content): int
+    {
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("INSERT INTO snapshots (name, server_name, type, content, size_bytes) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$name, $serverName, $type, $content, strlen($content)]);
+        return (int)$pdo->lastInsertId();
+    }
+
+    /**
+     * Получить все snapshots.
+     */
+    public static function getAll(): array
+    {
+        $pdo = Database::get();
+        return $pdo->query("SELECT id, name, server_name, type, size_bytes, created_at FROM snapshots ORDER BY created_at DESC")->fetchAll();
+    }
+
+    /**
+     * Получить содержимое snapshot по ID.
+     */
+    public static function get(int $id): ?array
+    {
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("SELECT * FROM snapshots WHERE id = ?");
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    /**
+     * Удалить snapshot по ID.
+     */
+    public static function delete(int $id): void
+    {
+        $pdo = Database::get();
+        $stmt = $pdo->prepare("DELETE FROM snapshots WHERE id = ?");
+        $stmt->execute([$id]);
+    }
+}
+
+
+╔══ FILE: ./src/Services/TlsService.php ══╗
+<?php
+
+class TlsService
+{
+    public static function listByServer(int $serverId): array
+    {
+        $server = Database::getServer($serverId);
+        if (!$server) {
+            throw new Exception('Сервер не найден');
+        }
+        $client = new StalwartClient($server['api_url'], $server['api_user'], $server['api_password']);
+        return $client->getCertificates();
+    }
+}
+
+
+╔══ FILE: ./src/SshClient.php ══╗
+<?php
+// src/SshClient.php
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use phpseclib3\Net\SSH2;
+
+class SshClient
+{
+    private ?SSH2 $ssh = null;
+    private string $host;
+    private int $port;
+    private string $user;
+    private ?string $password;
+
+    private ?string $privateKey = null;
+
+    public function __construct(string $host, int $port = 22, string $user = 'root', ?string $password = null, ?string $privateKey = null)
+    {
+        $this->host = $host;
+        $this->port = $port;
+        $this->user = $user;
+        $this->password = $password;
+        $this->privateKey = $privateKey;
+    }
+
+    public function connect(): bool
+    {
+        $this->ssh = new SSH2($this->host, $this->port);
+        $this->ssh->setTimeout(120);
+
+        // Сначала пробуем ключ
+        if (!empty($this->privateKey)) {
+            $key = \phpseclib3\Crypt\PublicKeyLoader::load($this->privateKey);
+            if ($key && $this->ssh->login($this->user, $key)) {
+                return true;
+            }
+        }
+
+        // Потом пароль
+        if (!empty($this->password)) {
+            if ($this->ssh->login($this->user, $this->password)) {
+                return true;
+            }
+        }
+
+        throw new Exception("Не удалось аутентифицироваться на {$this->host}: " . $this->ssh->getLastError());
+    }
+
+    public function exec(string $command): array
+    {
+        if (!$this->ssh) {
+            $this->connect();
+        }
+        $output = $this->ssh->exec($command);
+        return ['output' => $output, 'error' => ''];
+    }
+
+    public function isPackageInstalled(string $package): bool
+    {
+        $result = $this->exec("dpkg -l {$package} 2>/dev/null | grep '^ii'");
+        return !empty(trim($result['output']));
+    }
+    /**
+     * Проверить наличие python3 и модуля yaml.
+     * Если чего-то нет — установить.
+     * Возвращает ['success' => bool, 'message' => string]
+     */
+    public function ensurePythonYaml(): array
+    {
+        // 1. Проверяем, есть ли python3
+        $py = $this->exec("which python3 2>/dev/null");
+        if (empty(trim($py['output']))) {
+            // Устанавливаем python3
+            $this->exec("apt update 2>&1");
+            $this->exec("apt install -y python3 2>&1");
+        }
+
+        // 2. Проверяем, есть ли модуль yaml
+        $check = $this->exec("python3 -c 'import yaml' 2>&1");
+        if (strpos($check['output'], 'Error') !== false || strpos($check['output'], 'Traceback') !== false || strpos($check['output'], 'No module named') !== false) {
+            // Устанавливаем python3-yaml
+            $install = $this->exec("apt update 2>&1 && apt install -y python3-yaml 2>&1");
+            // Проверяем ещё раз
+            $verify = $this->exec("python3 -c 'import yaml; print(\"OK\")' 2>&1");
+            if (strpos($verify['output'], 'OK') === false) {
+                return [
+                    'success' => false,
+                    'message' => 'Не удалось установить python3-yaml: ' . $install['output']
+                ];
+            }
+        }
+
+        return ['success' => true, 'message' => 'python3 и yaml готовы'];
+    }
+    public function generateKeyPair(): array
+    {
+        $this->exec("mkdir -p /root/.ssh && chmod 700 /root/.ssh");
+        $this->exec("rm -f /root/.ssh/id_ed25519_panel /root/.ssh/id_ed25519_panel.pub");
+        $this->exec("ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_panel -N '' -q");
+        $pub = $this->exec("cat /root/.ssh/id_ed25519_panel.pub");
+        $priv = $this->exec("cat /root/.ssh/id_ed25519_panel");
+        return [
+            'public' => trim($pub['output']),
+            'private' => trim($priv['output']),
+        ];
+    }
+
+    public function setupSshKey(string $publicKey): void
+    {
+        $this->exec("mkdir -p /root/.ssh && chmod 700 /root/.ssh");
+        $this->exec("grep -qF '{$publicKey}' /root/.ssh/authorized_keys 2>/dev/null || echo '{$publicKey}' >> /root/.ssh/authorized_keys");
+        $this->exec("chmod 600 /root/.ssh/authorized_keys");
+    }
+
+    /**
+     * Автоматически определяет интерфейс, находит секцию addresses,
+     * добавляет новый IPv6, проверяет YAML и применяет через netplan apply.
+     * При ошибке — откатывает из бэкапа.
+     */
+    public function addIpv6(string $ipv6, string $interface = ''): array
+    {
+        // 1. Определяем интерфейс, если не указан
+        if (empty($interface)) {
+            $ifaceResult = $this->exec("ip -o link show | awk -F': ' '{print \$2}' | grep -v lo | head -1");
+            $interface = trim($ifaceResult['output']);
+            if (empty($interface)) {
+                return ['success' => false, 'message' => 'Не удалось определить сетевой интерфейс'];
+            }
+        }
+
+        // 2. Нормализуем IPv6 (убираем /64, если он есть)
+        $ipv6 = preg_replace('#/\d+$#', '', $ipv6);
+        $fullIp = $ipv6 . '/64';
+
+        // 3. Бэкап с временной меткой
+        $backup = "/root/netplan-backup-" . date('Ymd_His') . ".yaml";
+        $this->exec("cp /etc/netplan/50-cloud-init.yaml {$backup} 2>/dev/null");
+
+        // 4. Проверяем, есть ли уже IP на интерфейсе
+        $check = $this->exec("ip -6 addr show {$interface} | grep -F '{$ipv6}'");
+        if (!empty(trim($check['output']))) {
+            return ['success' => true, 'message' => "IP {$ipv6} уже настроен на {$interface}"];
+        }
+
+        // 5. Читаем текущий Netplan
+        $current = $this->exec("cat /etc/netplan/50-cloud-init.yaml");
+        $yaml = $current['output'];
+
+        // 6. Если IP уже есть в файле — просто применяем
+        if (strpos($yaml, $fullIp) !== false || strpos($yaml, $ipv6) !== false) {
+            $this->exec("netplan apply 2>&1");
+            return ['success' => true, 'message' => "IP {$fullIp} уже в Netplan, применён"];
+        }
+
+        // 7. Ищем секцию addresses и добавляем новый IP в том же формате
+        $lines = explode("\n", $yaml);
+        $newLines = [];
+        $inserted = false;
+        $inAddresses = false;
+        $addressesIndent = '';
+        $lastAddressLineIndex = -1;
+
+        foreach ($lines as $i => $line) {
+            // Определяем, что мы вошли в секцию addresses
+            if (preg_match('/^(\s*)addresses:\s*$/', $line, $m)) {
+                $inAddresses = true;
+                $addressesIndent = $m[1];
+                $newLines[] = $line;
+                continue;
+            }
+
+            // Если мы в секции addresses и встретили строку с IP
+            if ($inAddresses && preg_match('/^(\s*-\s*["\']?)([\d\.:a-fA-F]+)(\/\d+)?(["\']?)\s*$/', $line, $m)) {
+                $newLines[] = $line;
+                $lastAddressLineIndex = count($newLines) - 1;
+
+                // Если это IPv6 из того же диапазона — запоминаем, что тут можно вставить
+                continue;
+            }
+
+            // Если мы в секции addresses и встретили не-IP строку — выходим из секции
+            if ($inAddresses && !preg_match('/^\s*(-|#)/', $line) && trim($line) !== '') {
+                // Вставляем новый IP перед этой строкой, если ещё не вставили
+                if (!$inserted && $lastAddressLineIndex >= 0) {
+                    $indent = '      ';
+                    $newLines[] = $indent . '- "' . $fullIp . '"';
+                    $inserted = true;
+                }
+                $inAddresses = false;
+            }
+
+            $newLines[] = $line;
+        }
+
+        // Если дошли до конца файла и не вставили — вставляем после последней строки addresses
+        if (!$inserted && $lastAddressLineIndex >= 0) {
+            $indent = '      ';
+            array_splice($newLines, $lastAddressLineIndex + 1, 0, [$indent . '- "' . $fullIp . '"']);
+            $inserted = true;
+        }
+
+        if (!$inserted) {
+            return ['success' => false, 'message' => 'Не удалось найти секцию addresses в Netplan'];
+        }
+
+        $newYaml = implode("\n", $newLines);
+
+        // 8. Проверяем YAML через Python (yaml.safe_load)
+        $checkCmd = "python3 -c 'import yaml,sys; yaml.safe_load(open(\"/tmp/netplan-check.yaml\"))' 2>&1";
+        $encoded = base64_encode($newYaml);
+        $this->exec("echo '{$encoded}' | base64 -d > /tmp/netplan-check.yaml");
+        $validate = $this->exec($checkCmd);
+
+        if (strpos($validate['output'], 'Error') !== false || strpos($validate['output'], 'error') !== false || strpos($validate['output'], 'Traceback') !== false) {
+            return ['success' => false, 'message' => 'YAML невалиден: ' . $validate['output']];
+        }
+
+        // 9. Записываем новый YAML
+        $this->exec("echo '{$encoded}' | base64 -d > /etc/netplan/50-cloud-init.yaml");
+        $this->exec("chmod 600 /etc/netplan/50-cloud-init.yaml");
+
+        // 10. Применяем netplan
+        $apply = $this->exec("netplan apply 2>&1");
+
+        // 11. Проверяем, что IP появился
+        $verify = $this->exec("ip -6 addr show {$interface} | grep -F '{$ipv6}'");
+
+        if (empty(trim($verify['output']))) {
+            // Откат
+            $this->exec("cp {$backup} /etc/netplan/50-cloud-init.yaml");
+            $this->exec("netplan apply 2>&1");
+            return [
+                'success' => false,
+                'message' => "IP не появился. Откат выполнен. Ответ netplan: " . $apply['output']
+            ];
+        }
+
+        return ['success' => true, 'message' => "IP {$fullIp} добавлен и активен на {$interface}"];
+    }
+
+    /**
+     * Прочитать IPv6-адреса из Netplan.
+     */
+    public function getNetplanIps(string $interface = 'eth0'): array
+    {
+        $result = $this->exec("cat /etc/netplan/50-cloud-init.yaml 2>/dev/null");
+        $yaml = $result['output'];
+        if (empty(trim($yaml))) {
+            return [];
+        }
+
+        $ips = [];
+        $lines = explode("\n", $yaml);
+        foreach ($lines as $line) {
+            if (preg_match('/-\s*["\']?(2605:[\da-fA-F:]+)(\/\d+)?["\']?/', $line, $m)) {
+                $ips[] = $m[1] . ($m[2] ?? '/64');
+            }
+        }
+        return array_unique($ips);
+    }
+
+    /**
+     * Удалить IPv6-адрес из Netplan.
+     * Делает бэкап, удаляет строку с IP, применяет netplan apply.
+     * При ошибке — откат из бэкапа.
+     */
+    public function removeIpv6(string $ipv6, string $interface = 'eth0'): array
+    {
+        // Нормализуем IP (убираем /64, если есть)
+        $ipv6 = preg_replace('#/\d+$#', '', $ipv6);
+
+        // Проверяем, есть ли IP на интерфейсе
+        $check = $this->exec("ip -6 addr show {$interface} | grep -F '{$ipv6}'");
+        if (empty(trim($check['output']))) {
+            return ['success' => true, 'message' => "IP {$ipv6} уже отсутствует на {$interface}"];
+        }
+
+        // Бэкап
+        $backup = "/root/netplan-backup-" . date('Ymd_His') . ".yaml";
+        $this->exec("cp /etc/netplan/50-cloud-init.yaml {$backup} 2>/dev/null");
+
+        // Читаем Netplan
+        $current = $this->exec("cat /etc/netplan/50-cloud-init.yaml");
+        $yaml = $current['output'];
+
+        // Удаляем строку с IP
+        $lines = explode("\n", $yaml);
+        $newLines = [];
+        $removed = false;
+
+        foreach ($lines as $line) {
+            // Пропускаем строки, содержащие удаляемый IP
+            if (strpos($line, $ipv6) !== false) {
+                $removed = true;
+                continue;
+            }
+            $newLines[] = $line;
+        }
+
+        if (!$removed) {
+            return ['success' => false, 'message' => "IP {$ipv6} не найден в Netplan"];
+        }
+
+        $newYaml = implode("\n", $newLines);
+
+        // Проверяем YAML через Python
+        $encoded = base64_encode($newYaml);
+        $this->exec("echo '{$encoded}' | base64 -d > /tmp/netplan-check.yaml");
+        $validate = $this->exec("python3 -c 'import yaml; yaml.safe_load(open(\"/tmp/netplan-check.yaml\"))' 2>&1");
+
+        if (strpos($validate['output'], 'Error') !== false || strpos($validate['output'], 'Traceback') !== false) {
+            return ['success' => false, 'message' => 'YAML невалиден: ' . $validate['output']];
+        }
+
+        // Записываем
+        $this->exec("echo '{$encoded}' | base64 -d > /etc/netplan/50-cloud-init.yaml");
+        $this->exec("chmod 600 /etc/netplan/50-cloud-init.yaml");
+
+        // Применяем
+        $apply = $this->exec("netplan apply 2>&1");
+
+        // Проверяем, что IP исчез
+        $verify = $this->exec("ip -6 addr show {$interface} | grep -F '{$ipv6}'");
+        if (!empty(trim($verify['output']))) {
+            // Откат
+            $this->exec("cp {$backup} /etc/netplan/50-cloud-init.yaml");
+            $this->exec("netplan apply 2>&1");
+            return ['success' => false, 'message' => "IP не удалился. Откат выполнен."];
+        }
+
+        return ['success' => true, 'message' => "IP {$ipv6} удалён с {$interface}"];
+    }
+}
+
+
+╔══ FILE: ./src/StalwartClient.php ══╗
+<?php
+// src/StalwartClient.php
+
+class StalwartClient
+{
+    private string $apiUrl;
+    private string $username;
+    private string $password;
+
+    public function __construct(string $apiUrl, string $username, string $password)
+    {
+        $this->apiUrl = rtrim($apiUrl, '/') . '/jmap';
+        $this->username = $username;
+        $this->password = $password;
+    }
+
+    private function request(array $methodCalls, array $using = []): array
+    {
+        $defaultUsing = ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'];
+        $using = array_unique(array_merge($defaultUsing, $using));
+
+        $payload = [
+            'using' => array_values($using),
+            'methodCalls' => $methodCalls,
+        ];
+
+        $ch = curl_init($this->apiUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_USERPWD => $this->username . ':' . $this->password,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT => 30,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) {
+            throw new Exception("cURL error: $error");
+        }
+        if ($httpCode !== 200) {
+            throw new Exception("JMAP HTTP error $httpCode: $response");
+        }
+
+        $data = json_decode($response, true);
+        if (!isset($data['methodResponses'])) {
+            throw new Exception("Invalid JMAP response: $response");
+        }
+        return $data;
+    }
+
+    public function testConnection(): array
+    {
+        try {
+            $response = $this->request([
+                ['Core/echo', ['hello' => 'world'], 'c1']
+            ]);
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'Core/echo') {
+                    return ['success' => true, 'message' => 'Соединение установлено, JMAP работает'];
+                }
+            }
+            return ['success' => false, 'message' => 'Неожиданный ответ сервера'];
+        } catch (Exception $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function getDomains(): array
+    {
+        $response = $this->request([
+            ['x:Domain/get', ['ids' => null], 'c1']
+        ]);
+        $domains = [];
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Domain/get' && isset($method[1]['list'])) {
+                foreach ($method[1]['list'] as $domain) {
+                    $domains[$domain['name']] = $domain['id'];
+                }
+            }
+        }
+        return $domains;
+    }
+
+    public function getDomainIdByName(string $name): ?string
+    {
+        $domains = $this->getDomains();
+        return $domains[$name] ?? null;
+    }
+
+    public function createDomain(string $domainName): ?string
+    {
+        $response = $this->request([
+            ['x:Domain/set', [
+                'create' => [
+                    'new1' => [
+                        '@type' => 'Domain',
+                        'name' => $domainName,
+                    ]
+                ]
+            ], 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Domain/set') {
+                if (isset($method[1]['created']['new1']['id'])) {
+                    return $method[1]['created']['new1']['id'];
+                }
+                if (isset($method[1]['notCreated']['new1'])) {
+                    throw new Exception("Ошибка создания домена: " . json_encode($method[1]['notCreated']['new1']));
+                }
+            }
+        }
+        return null;
+    }
+
+    public function deleteDomain(string $domainId): bool
+    {
+        $destroy = ['destroy' => [$domainId]];
+        $response = $this->request([
+            ['x:Domain/set', $destroy, 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Domain/set') {
+                if (isset($method[1]['notDestroyed'][$domainId])) {
+                    throw new Exception("Ошибка удаления домена: " . json_encode($method[1]['notDestroyed'][$domainId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function createAccount(string $localPart, string $domainId, string $password): bool
+    {
+        $credential = new stdClass();
+        $credential->{'@type'} = 'Password';
+        $credential->secret = $password;
+
+        $credentials = new stdClass();
+        $credentials->{'0'} = $credential;
+
+        $roles = new stdClass();
+        $roles->{'@type'} = 'User';
+
+        $permissions = new stdClass();
+        $permissions->{'@type'} = 'Inherit';
+
+        $account = new stdClass();
+        $account->{'@type'} = 'User';
+        $account->name = $localPart;
+        $account->domainId = $domainId;
+        $account->credentials = $credentials;
+        $account->roles = $roles;
+        $account->permissions = $permissions;
+
+        $create = new stdClass();
+        $create->new1 = $account;
+
+        $response = $this->request([
+            ['x:Account/set', [
+                'create' => $create
+            ], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Account/set') {
+                if (isset($method[1]['notCreated']['new1'])) {
+                    throw new Exception("Ошибка создания аккаунта: " . json_encode($method[1]['notCreated']['new1']));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function deleteAccount(string $accountId): bool
+    {
+        $destroy = ['destroy' => [$accountId]];
+        $response = $this->request([
+            ['x:Account/set', $destroy, 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Account/set') {
+                if (isset($method[1]['notDestroyed'][$accountId])) {
+                    throw new Exception("Ошибка удаления аккаунта: " . json_encode($method[1]['notDestroyed'][$accountId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function getAccounts(): array
+    {
+        $response = $this->request([
+            ['x:Account/get', ['ids' => null], 'c1']
+        ]);
+        $accounts = [];
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Account/get' && isset($method[1]['list'])) {
+                foreach ($method[1]['list'] as $acc) {
+                    $accounts[] = [
+                        'id'       => $acc['id'] ?? '',
+                        'name'     => $acc['name'] ?? '',
+                        'domainId' => $acc['domainId'] ?? '',
+                    ];
+                }
+            }
+        }
+        return $accounts;
+    }
+
+    public function getDkimSignatures(): array
+    {
+        try {
+            $response = $this->request([
+                ['x:DkimSignature/get', ['ids' => null], 'c1']
+            ]);
+            $signatures = [];
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'x:DkimSignature/get' && isset($method[1]['list'])) {
+                    foreach ($method[1]['list'] as $sig) {
+                        $rawHeaders = $sig['headers'] ?? [];
+                        $headers = [];
+                        if (is_array($rawHeaders)) {
+                            foreach ($rawHeaders as $key => $value) {
+                                if (is_string($key)) {
+                                    $headers[] = $key;
+                                } elseif (is_string($value)) {
+                                    $headers[] = $value;
+                                }
+                            }
+                        }
+                        $signatures[] = [
+                            'id'        => $sig['id'] ?? '',
+                            'domainId'  => $sig['domainId'] ?? '',
+                            'selector'  => $sig['selector'] ?? '',
+                            'headers'   => $headers,
+                            'algorithm' => $sig['@type'] ?? '',
+                            'stage'     => $sig['stage'] ?? '',
+                        ];
+                    }
+                }
+            }
+            return $signatures;
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+
+    public function updateDkimHeaders(string $signatureId, array $headers): bool
+    {
+        $headersSet = new stdClass();
+        foreach ($headers as $h) {
+            $headersSet->{$h} = true;
+        }
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->headers = $headersSet;
+        $update->{$signatureId} = $patch;
+
+        $response = $this->request([
+            ['x:DkimSignature/set', [
+                'update' => $update
+            ], 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:DkimSignature/set') {
+                if (isset($method[1]['notUpdated'][$signatureId])) {
+                    throw new Exception("Ошибка обновления: " . json_encode($method[1]['notUpdated'][$signatureId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function updateDkimSelector(string $signatureId, string $selector): bool
+    {
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->selector = $selector;
+        $update->{$signatureId} = $patch;
+
+        $response = $this->request([
+            ['x:DkimSignature/set', [
+                'update' => $update
+            ], 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:DkimSignature/set') {
+                if (isset($method[1]['notUpdated'][$signatureId])) {
+                    throw new Exception("Ошибка обновления селектора: " . json_encode($method[1]['notUpdated'][$signatureId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function getCertificates(): array
+    {
+        try {
+            $response = $this->request([
+                ['x:Certificate/get', ['ids' => null], 'c1']
+            ]);
+            $certs = [];
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'x:Certificate/get' && isset($method[1]['list'])) {
+                    foreach ($method[1]['list'] as $cert) {
+                        $rawSan = $cert['subjectAlternativeNames'] ?? [];
+                        $san = [];
+                        if (is_array($rawSan)) {
+                            foreach ($rawSan as $key => $value) {
+                                if (is_string($key)) {
+                                    $san[] = $key;
+                                } elseif (is_string($value)) {
+                                    $san[] = $value;
+                                }
+                            }
+                        }
+                        $certs[] = [
+                            'id'                     => $cert['id'] ?? '',
+                            'subjectAlternativeNames' => $san,
+                            'notValidBefore'         => $cert['notValidBefore'] ?? '',
+                            'notValidAfter'          => $cert['notValidAfter'] ?? '',
+                            'issuer'                 => $cert['issuer'] ?? '',
+                        ];
+                    }
+                }
+            }
+            return $certs;
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+
+    public function getConnectionStrategies(): array
+    {
+        try {
+            $response = $this->request([
+                ['x:MtaConnectionStrategy/get', ['ids' => null], 'c1']
+            ]);
+            $strategies = [];
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'x:MtaConnectionStrategy/get' && isset($method[1]['list'])) {
+                    foreach ($method[1]['list'] as $st) {
+                        $ips = [];
+                        if (!empty($st['sourceIps']) && is_array($st['sourceIps'])) {
+                            foreach ($st['sourceIps'] as $ipEntry) {
+                                if (is_array($ipEntry) && !empty($ipEntry['sourceIp'])) {
+                                    $ips[] = [
+                                        'ip' => $ipEntry['sourceIp'],
+                                        'ehlo' => $ipEntry['ehloHostname'] ?? null,
+                                    ];
+                                } elseif (is_string($ipEntry)) {
+                                    $ips[] = ['ip' => $ipEntry, 'ehlo' => null];
+                                }
+                            }
+                        }
+                        $strategies[] = [
+                            'id'       => $st['id'] ?? '',
+                            'name'     => $st['name'] ?? '',
+                            'ehlo'     => $st['ehloHostname'] ?? '',
+                            'sourceIps'=> $ips,
+                        ];
+                    }
+                }
+            }
+            return $strategies;
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+
+    public function getOutboundStrategy(): ?array
+    {
+        try {
+            $response = $this->request([
+                ['x:MtaOutboundStrategy/get', ['ids' => [ 'singleton' ]], 'c1']
+            ]);
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'x:MtaOutboundStrategy/get' && isset($method[1]['list'][0])) {
+                    return $method[1]['list'][0];
+                }
+            }
+            return null;
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
+    public function deleteDkimSignature(string $signatureId): bool
+    {
+        $destroy = ['destroy' => [$signatureId]];
+        $response = $this->request([
+            ['x:DkimSignature/set', $destroy, 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:DkimSignature/set') {
+                if (isset($method[1]['notDestroyed'][$signatureId])) {
+                    throw new Exception("Ошибка удаления DKIM: " . json_encode($method[1]['notDestroyed'][$signatureId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Удалить IP из Connection Strategy.
+     * Читает текущую стратегию, убирает IP из sourceIps, обновляет.
+     */
+        public function removeIpFromConnectionStrategy(string $strategyId, string $ipToRemove): bool
+    {
+        $response = $this->request([
+            ['x:MtaConnectionStrategy/get', ['ids' => [$strategyId]], 'c1']
+        ]);
+
+        $strategy = null;
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaConnectionStrategy/get' && isset($method[1]['list'][0])) {
+                $strategy = $method[1]['list'][0];
+            }
+        }
+
+        if (!$strategy) {
+            throw new Exception("Стратегия с ID {$strategyId} не найдена");
+        }
+
+        // Собираем новые sourceIps как stdClass (Map), а не массив
+        $newIps = new stdClass();
+        $i = 0;
+        if (!empty($strategy['sourceIps']) && is_array($strategy['sourceIps'])) {
+            foreach ($strategy['sourceIps'] as $key => $ipEntry) {
+                $currentIp = '';
+                if (is_array($ipEntry)) {
+                    $currentIp = $ipEntry['sourceIp'] ?? '';
+                } elseif (is_string($ipEntry)) {
+                    $currentIp = $ipEntry;
+                }
+
+                if ($currentIp !== $ipToRemove) {
+                    // Каждый элемент тоже должен быть stdClass, а не массив
+                    if (is_array($ipEntry)) {
+                        $obj = new stdClass();
+                        foreach ($ipEntry as $k => $v) {
+                            $obj->{$k} = $v;
+                        }
+                        $newIps->{(string)$i} = $obj;
+                    } else {
+                        $newIps->{(string)$i} = $ipEntry;
+                    }
+                    $i++;
+                }
+            }
+        }
+
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->sourceIps = $newIps;
+        $update->{$strategyId} = $patch;
+
+        $response = $this->request([
+            ['x:MtaConnectionStrategy/set', ['update' => $update], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaConnectionStrategy/set') {
+                if (isset($method[1]['notUpdated'][$strategyId])) {
+                    throw new Exception("Ошибка удаления IP: " . json_encode($method[1]['notUpdated'][$strategyId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Удалить Connection Strategy целиком.
+     */
+    public function deleteConnectionStrategy(string $strategyId): bool
+    {
+        $destroy = ['destroy' => [$strategyId]];
+        $response = $this->request([
+            ['x:MtaConnectionStrategy/set', $destroy, 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaConnectionStrategy/set') {
+                if (isset($method[1]['notDestroyed'][$strategyId])) {
+                    throw new Exception("Ошибка удаления стратегии: " . json_encode($method[1]['notDestroyed'][$strategyId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Убрать правило для домена из MtaOutboundStrategy.
+     * Если стратегия удалена, нужно убрать правило, которое на неё ссылается.
+     */
+    public function removeOutboundRule(string $strategyName): bool
+    {
+        $response = $this->request([
+            ['x:MtaOutboundStrategy/get', ['ids' => ['singleton']], 'c1']
+        ]);
+
+        $outbound = null;
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaOutboundStrategy/get' && isset($method[1]['list'][0])) {
+                $outbound = $method[1]['list'][0];
+            }
+        }
+
+        if (!$outbound || empty($outbound['connection']['match'])) {
+            return false;
+        }
+
+        $newMatch = [];
+        foreach ($outbound['connection']['match'] as $rule) {
+            if (isset($rule['then']) && $rule['then'] === "'" . $strategyName . "'") {
+                continue;
+            }
+            $newMatch[] = $rule;
+        }
+
+        $newConnection = new stdClass();
+        $newMatchObj = new stdClass();
+        $i = 0;
+        foreach ($newMatch as $rule) {
+            $obj = new stdClass();
+            foreach ($rule as $k => $v) {
+                $obj->{$k} = $v;
+            }
+            $newMatchObj->{(string)$i} = $obj;
+            $i++;
+        }
+        $newConnection->match = $newMatchObj;
+        $newConnection->else = $outbound['connection']['else'] ?? "'default'";
+
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->connection = $newConnection;
+        $update->{'singleton'} = $patch;
+
+        $response = $this->request([
+            ['x:MtaOutboundStrategy/set', ['update' => $update], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaOutboundStrategy/set') {
+                if (isset($method[1]['notUpdated']['singleton'])) {
+                    throw new Exception("Ошибка обновления Outbound Strategy: " . json_encode($method[1]['notUpdated']['singleton']));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Удалить TLS-сертификат по ID.
+     */
+    public function deleteCertificate(string $certId): bool
+    {
+        $destroy = ['destroy' => [$certId]];
+        $response = $this->request([
+            ['x:Certificate/set', $destroy, 'c1']
+        ]);
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Certificate/set') {
+                if (isset($method[1]['notDestroyed'][$certId])) {
+                    throw new Exception("Ошибка удаления сертификата: " . json_encode($method[1]['notDestroyed'][$certId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Проверить и отвязать сертификат от SystemSettings.defaultCertificateId.
+     */
+    public function unlinkCertificateFromDefaults(string $certId): void
+    {
+        try {
+            $response = $this->request([
+                ['x:SystemSettings/get', ['ids' => ['singleton']], 'c1']
+            ]);
+
+            $settings = null;
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'x:SystemSettings/get' && isset($method[1]['list'][0])) {
+                    $settings = $method[1]['list'][0];
+                }
+            }
+
+            if ($settings && ($settings['defaultCertificateId'] ?? '') === $certId) {
+                $update = new stdClass();
+                $patch = new stdClass();
+                $patch->defaultCertificateId = null;
+                $update->{'singleton'} = $patch;
+
+                $this->request([
+                    ['x:SystemSettings/set', ['update' => $update], 'c1']
+                ]);
+            }
+        } catch (Exception $e) {
+            // Не критично, если SystemSettings недоступны
+        }
+    }
+
+    /**
+     * Создать DKIM-подпись.
+     * $domainId — ID домена
+     * $privateKey — PEM-encoded приватный ключ
+     * $algorithm — 'rsa' или 'ed25519'
+     * $selector — селектор (если null, генерируется автоматически)
+     */
+    public function createDkimSignature(string $domainId, string $privateKey, string $algorithm = 'rsa', ?string $selector = null): ?string
+    {
+        if (!$selector) {
+            $date = date('Ymd');
+            $selector = 'v1-' . $algorithm . '-' . $date;
+        }
+
+        $type = ($algorithm === 'ed25519') ? 'Dkim1Ed25519Sha256' : 'Dkim1RsaSha256';
+
+        $keyObj = new stdClass();
+        $keyObj->{'@type'} = 'Text';
+        $keyObj->secret = $privateKey;
+
+        $sig = new stdClass();
+        $sig->{'@type'} = $type;
+        $sig->domainId = $domainId;
+        $sig->selector = $selector;
+        $sig->privateKey = $keyObj;
+
+        $sig->canonicalization = 'relaxed/relaxed';
+
+        $create = new stdClass();
+        $create->new1 = $sig;
+
+        $response = $this->request([
+            ['x:DkimSignature/set', ['create' => $create], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:DkimSignature/set') {
+                if (isset($method[1]['created']['new1']['id'])) {
+                    return $method[1]['created']['new1']['id'];
+                }
+                if (isset($method[1]['notCreated']['new1'])) {
+                    throw new Exception("Ошибка создания DKIM: " . json_encode($method[1]['notCreated']['new1']));
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Найти домены, привязанные к указанному IP.
+     * Логика: IP → Connection Strategy → правила в Outbound Strategy → домены.
+     */
+    public function getDomainsByIp(string $ip): array
+    {
+        // 1. Находим все стратегии, где в sourceIps есть этот IP
+        $strategies = $this->getConnectionStrategies();
+        $strategyNames = [];
+        foreach ($strategies as $st) {
+            foreach ($st['sourceIps'] as $ipEntry) {
+                if ($ipEntry['ip'] === $ip) {
+                    $strategyNames[] = $st['name'];
+                    break;
+                }
+            }
+        }
+
+        if (empty($strategyNames)) {
+            return [];
+        }
+
+        // 2. Читаем Outbound Strategy и ищем правила для этих стратегий
+        $outbound = $this->getOutboundStrategy();
+        if (!$outbound || empty($outbound['connection']['match'])) {
+            return [];
+        }
+
+        $domains = [];
+        foreach ($outbound['connection']['match'] as $rule) {
+            $ifExpr = $rule['if'] ?? '';
+            $thenExpr = $rule['then'] ?? '';
+
+            // Ищем sender_domain == 'X'
+            if (preg_match("/sender_domain\s*==\s*'([^']+)'/", $ifExpr, $m)) {
+                $domain = $m[1];
+                // Проверяем, что стратегия в then — из нашего списка
+                $thenName = trim($thenExpr, "'\"");
+                if (in_array($thenName, $strategyNames)) {
+                    $domains[] = $domain;
+                }
+            }
+        }
+
+        return $domains;
+    }
+
+    /**
+     * Создать новую Connection Strategy с указанным IP и EHLO.
+     */
+    public function createConnectionStrategy(string $name, string $ehlo, string $ip): ?string
+    {
+        // Проверяем, нет ли уже стратегии с таким именем
+        $existing = $this->getConnectionStrategies();
+        foreach ($existing as $st) {
+            if ($st['name'] === $name) {
+                return $st['id'];
+            }
+        }
+
+        $ipEntry = new stdClass();
+        $ipEntry->sourceIp = $ip;
+
+        $sourceIps = new stdClass();
+        $sourceIps->{'0'} = $ipEntry;
+
+        $strategy = new stdClass();
+        $strategy->{'@type'} = 'MtaConnectionStrategy';
+        $strategy->name = $name;
+        $strategy->description = $name;
+        $strategy->ehloHostname = $ehlo;
+        $strategy->sourceIps = $sourceIps;
+
+        $create = new stdClass();
+        $create->new1 = $strategy;
+
+        $response = $this->request([
+            ['x:MtaConnectionStrategy/set', ['create' => $create], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaConnectionStrategy/set') {
+                if (isset($method[1]['created']['new1']['id'])) {
+                    return $method[1]['created']['new1']['id'];
+                }
+                if (isset($method[1]['notCreated']['new1'])) {
+                    throw new Exception("Ошибка создания стратегии: " . json_encode($method[1]['notCreated']['new1']));
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Добавить правило в Outbound Strategy: if sender_domain == 'domain' then 'strategy'.
+     */
+    public function addOutboundRule(string $domain, string $strategyName): bool
+    {
+        $outbound = $this->getOutboundStrategy();
+
+        $existingMatch = [];
+        if ($outbound && !empty($outbound['connection']['match'])) {
+            foreach ($outbound['connection']['match'] as $rule) {
+                $existingMatch[] = $rule;
+            }
+        }
+
+        // Убираем старые правила для этого домена (если есть)
+        $filteredMatch = [];
+        foreach ($existingMatch as $rule) {
+            $ifExpr = $rule['if'] ?? '';
+            if (strpos($ifExpr, "'{$domain}'") !== false) {
+                continue;
+            }
+            $filteredMatch[] = $rule;
+        }
+
+        // Добавляем новое правило
+        $newRule = new stdClass();
+        $newRule->if = "sender_domain == '{$domain}'";
+        $newRule->then = "'{$strategyName}'";
+
+        $matchObj = new stdClass();
+        $i = 0;
+        foreach ($filteredMatch as $rule) {
+            $obj = new stdClass();
+            foreach ($rule as $k => $v) {
+                $obj->{$k} = $v;
+            }
+            $matchObj->{(string)$i} = $obj;
+            $i++;
+        }
+        $matchObj->{(string)$i} = $newRule;
+
+        $newConnection = new stdClass();
+        $newConnection->match = $matchObj;
+        $newConnection->else = $outbound['connection']['else'] ?? "'default'";
+
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->connection = $newConnection;
+        $update->{'singleton'} = $patch;
+
+        $response = $this->request([
+            ['x:MtaOutboundStrategy/set', ['update' => $update], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaOutboundStrategy/set') {
+                if (isset($method[1]['notUpdated']['singleton'])) {
+                    throw new Exception("Ошибка обновления Outbound Strategy: " . json_encode($method[1]['notUpdated']['singleton']));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Создать отдельный ACME-провайдер для домена.
+     */
+    public function createAcmeProvider(string $providerName, string $contactEmail): ?string
+    {
+        $email = str_replace('mailto:', '', $contactEmail);
+
+        $contactSet = new stdClass();
+        $contactSet->{'mailto:' . $email} = true;
+
+        $provider = new stdClass();
+        $provider->{'@type'} = 'AcmeProvider';
+        $provider->directory = 'https://acme-v02.api.letsencrypt.org/directory';
+        $provider->challengeType = 'TlsAlpn01';
+        $provider->contact = $contactSet;
+
+        $create = new stdClass();
+        $create->new1 = $provider;
+
+        $response = $this->request([
+            ['x:AcmeProvider/set', ['create' => $create], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:AcmeProvider/set') {
+                if (isset($method[1]['created']['new1']['id'])) {
+                    return $method[1]['created']['new1']['id'];
+                }
+                if (isset($method[1]['notCreated']['new1'])) {
+                    throw new Exception("Ошибка создания ACME-провайдера: " . json_encode($method[1]['notCreated']['new1']));
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Привязать домен к ACME-провайдеру и указать SAN.
+     */
+    public function attachDomainToAcme(string $domainId, string $acmeProviderId, array $sanList): bool
+    {
+        $certMgmt = new stdClass();
+        $certMgmt->{'@type'} = 'Automatic';
+        $certMgmt->acmeProviderId = $acmeProviderId;
+
+        $sanSet = new stdClass();
+        foreach ($sanList as $san) {
+            $sanSet->{$san} = true;
+        }
+        $certMgmt->subjectAlternativeNames = $sanSet;
+
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->certificateManagement = $certMgmt;
+        $update->{$domainId} = $patch;
+
+        $response = $this->request([
+            ['x:Domain/set', ['update' => $update], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:Domain/set') {
+                if (isset($method[1]['notUpdated'][$domainId])) {
+                    throw new Exception("Ошибка привязки к ACME: " . json_encode($method[1]['notUpdated'][$domainId]));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Удалить правило для домена из Outbound Strategy.
+     */
+    public function removeOutboundRuleByDomain(string $domain): bool
+    {
+        $outbound = $this->getOutboundStrategy();
+        if (!$outbound || empty($outbound['connection']['match'])) {
+            return false;
+        }
+
+        $newMatch = [];
+        $removed = false;
+        foreach ($outbound['connection']['match'] as $rule) {
+            $ifExpr = $rule['if'] ?? '';
+            if (strpos($ifExpr, "'{$domain}'") !== false) {
+                $removed = true;
+                continue;
+            }
+            $newMatch[] = $rule;
+        }
+
+        if (!$removed) {
+            return false;
+        }
+
+        $newConnection = new stdClass();
+        $matchObj = new stdClass();
+        $i = 0;
+        foreach ($newMatch as $rule) {
+            $obj = new stdClass();
+            foreach ($rule as $k => $v) {
+                $obj->{$k} = $v;
+            }
+            $matchObj->{(string)$i} = $obj;
+            $i++;
+        }
+        $newConnection->match = $matchObj;
+        $newConnection->else = $outbound['connection']['else'] ?? "'default'";
+
+        $update = new stdClass();
+        $patch = new stdClass();
+        $patch->connection = $newConnection;
+        $update->{'singleton'} = $patch;
+
+        $response = $this->request([
+            ['x:MtaOutboundStrategy/set', ['update' => $update], 'c1']
+        ]);
+
+        foreach ($response['methodResponses'] as $method) {
+            if ($method[0] === 'x:MtaOutboundStrategy/set') {
+                if (isset($method[1]['notUpdated']['singleton'])) {
+                    throw new Exception("Ошибка удаления правила: " . json_encode($method[1]['notUpdated']['singleton']));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Найти Connection Strategy по имени.
+     */
+    public function findStrategyByName(string $name): ?array
+    {
+        $strategies = $this->getConnectionStrategies();
+        foreach ($strategies as $st) {
+            if ($st['name'] === $name) {
+                return $st;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Получить список всех ACME-провайдеров.
+     */
+    public function getAcmeProviders(): array
+    {
+        try {
+            $response = $this->request([
+                ['x:AcmeProvider/get', ['ids' => null], 'c1']
+            ]);
+            $providers = [];
+            foreach ($response['methodResponses'] as $method) {
+                if ($method[0] === 'x:AcmeProvider/get' && isset($method[1]['list'])) {
+                    foreach ($method[1]['list'] as $p) {
+                        $providers[] = [
+                            'id' => $p['id'] ?? '',
+                            'directory' => $p['directory'] ?? '',
+                            'challengeType' => $p['challengeType'] ?? '',
+                            'contact' => $p['contact'] ?? [],
+                        ];
+                    }
+                }
+            }
+            return $providers;
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+
+    public function applySnapshot(string $ndjson): array
+    {
+        $log = [];
+        $lines = explode("\n", $ndjson);
+        $upserts = [];
+        $updates = [];
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+            $obj = json_decode($line, true);
+            if ($obj === null) continue;
+            $type = $obj['@type'] ?? '';
+            $object = $obj['object'] ?? '';
+            if ($type === 'upsert') {
+                if (!isset($upserts[$object])) $upserts[$object] = [];
+                $upserts[$object][] = $obj['value'] ?? [];
+            } elseif ($type === 'update') {
+                if (!isset($updates[$object])) $updates[$object] = [];
+                $updates[$object][] = $obj['value'] ?? [];
+            }
+        }
+
+        foreach ($upserts as $object => $values) {
+            try {
+                $method = 'x:' . $object . '/set';
+                $create = new stdClass();
+                $i = 0;
+                foreach ($values as $value) {
+                    $obj = new stdClass();
+                    foreach ($value as $k => $v) {
+                        if (is_string($v) && strpos($v, '#') === 0) continue;
+                        $obj->{$k} = $v;
+                    }
+                    $create->{'new' . $i} = $obj;
+                    $i++;
+                }
+                $this->request([[$method, ['create' => $create], 'c1']]);
+                $log[] = "OK: {$object} ({$i})";
+            } catch (Exception $e) {
+                $log[] = "ERR: {$object}: " . $e->getMessage();
+            }
+        }
+
+        foreach ($updates as $object => $values) {
+            try {
+                $method = 'x:' . $object . '/set';
+                $update = new stdClass();
+                $patch = new stdClass();
+                foreach ($values as $value) {
+                    foreach ($value as $k => $v) {
+                        if (is_string($v) && strpos($v, '#') === 0) continue;
+                        $patch->{$k} = $v;
+                    }
+                }
+                $update->{'singleton'} = $patch;
+                $this->request([[$method, ['update' => $update], 'c1']]);
+                $log[] = "OK: {$object} (singleton)";
+            } catch (Exception $e) {
+                $log[] = "ERR: {$object}: " . $e->getMessage();
+            }
+        }
+
+        return $log;
+    }
+}
+
+
+╔══ FILE: ./views/domains.php ══╗
+<?php if (empty($servers)): ?>
+    <div class="card"><p>Сначала добавьте сервер на вкладке <a href="?tab=servers">Серверы</a>.</p></div>
+<?php else: ?>
+    <div class="card">
+        <h2>🌐 Создать домен</h2>
+        <form method="post">
+            <input type="hidden" name="action" value="create_domain">
+            <table>
+                <tr><td>Сервер</td><td>
+                    <select name="server_id" required>
+                        <option value="">— Выберите сервер —</option>
+                        <?php foreach ($servers as $s): ?>
+                            <option value="<?= $s['id'] ?>"><?= htmlspecialchars($s['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </td></tr>
+                <tr><td>Домен</td><td><input type="text" name="domain_name" placeholder="diynest.ru" required></td></tr>
+                <tr><td>IP для отправки</td><td>
+                    <select name="attach_ip">
+                        <option value="">— Не привязывать —</option>
+                        <?php foreach ($servers as $s): ?>
+                            <?php $ips = ServerService::getNetplanIps((int)$s['id']); ?>
+                            <?php if (!isset($ips['_error']) && !empty($ips)): ?>
+                                <?php foreach ($ips as $ip): ?>
+                                    <?php $ipClean = preg_replace('#/\d+$#', '', $ip); ?>
+                                    <option value="<?= htmlspecialchars($ipClean) ?>"><?= htmlspecialchars($ipClean) ?> (<?= htmlspecialchars($s['name']) ?>)</option>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        <?php endforeach; ?>
+                    </select>
+                </td></tr>
+                <tr><td>EHLO Hostname</td><td><input type="text" name="ehlo" placeholder="mail.diynest.ru (опционально)"></td></tr>
+                <tr><td>Доп. домен для TLS</td><td><input type="text" name="extra_san" placeholder="www.diynest.ru (опционально)"></td></tr>
+                <tr><td>DKIM</td><td><span class="muted">Создаётся автоматически Stalwart (RSA + Ed25519)</span></td></tr>
+            </table>
+            <button type="submit">Создать домен</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2>📧 Создать почтовый ящик</h2>
+        <form method="post">
+            <input type="hidden" name="action" value="create_account">
+            <table>
+                <tr><td>Сервер</td><td>
+                    <select name="server_id" required>
+                        <option value="">— Выберите сервер —</option>
+                        <?php foreach ($servers as $s): ?>
+                            <option value="<?= $s['id'] ?>"><?= htmlspecialchars($s['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </td></tr>
+                <tr><td>Домен</td><td><input type="text" name="domain_name" placeholder="diynest.ru" required></td></tr>
+                <tr><td>Имя ящика</td><td><input type="text" name="local_part" placeholder="news" required></td></tr>
+                <tr><td>Пароль</td><td><input type="password" name="password" required></td></tr>
+            </table>
+            <button type="submit">Создать ящик</button>
+        </form>
+    </div>
+
+    <?php foreach ($serverData as $serverId => $data): ?>
+        <div class="card">
+            <h3>
+                <?= htmlspecialchars($data['server']['name']) ?>
+                <span class="muted">(<?= htmlspecialchars($data['server']['api_url']) ?>)</span>
+                <?php if (!empty($data['server']['is_primary'])): ?>
+                    <span class="badge primary">⭐ основной</span>
+                <?php endif; ?>
+            </h3>
+
+            <?php if ($data['error']): ?>
+                <p class="badge err">Ошибка: <?= htmlspecialchars($data['error']) ?></p>
+            <?php elseif (empty($data['domains'])): ?>
+                <p class="muted">Доменов пока нет.</p>
+            <?php else: ?>
+                <table>
+                    <tr>
+                        <th>Домен</th>
+                        <th>ID</th>
+                        <th>Ящики</th>
+                        <th>DKIM / Сертификаты / Стратегии</th>
+                        <th>Действия</th>
+                    </tr>
+                    <?php foreach ($data['domains'] as $domainName => $domainId): ?>
+                        <?php
+                            $domainAccounts = array_filter($data['accounts'], fn($a) => $a['domainId'] === $domainId);
+                            $domainDkim = array_filter($data['dkim'], fn($d) => $d['domainId'] === $domainId);
+                        ?>
+                        <tr>
+                            <td><strong><?= htmlspecialchars($domainName) ?></strong></td>
+                            <td class="muted"><?= htmlspecialchars($domainId) ?></td>
+                            <td>
+                                <?php if (empty($domainAccounts)): ?>
+                                    <span class="muted">—</span>
+                                <?php else: ?>
+                                    <?php foreach ($domainAccounts as $acc): ?>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                            <span><?= htmlspecialchars($acc['name']) ?>@<?= htmlspecialchars($domainName) ?></span>
+                                            <form method="post" style="display:inline; margin: 0;">
+                                                <input type="hidden" name="action" value="delete_account">
+                                                <input type="hidden" name="server_id" value="<?= $serverId ?>">
+                                                <input type="hidden" name="account_id" value="<?= htmlspecialchars($acc['id']) ?>">
+                                                <button type="submit" class="danger" style="padding: 2px 8px; font-size: 12px; margin: 0;" onclick="return confirm('Удалить ящик <?= htmlspecialchars($acc['name']) ?>@<?= htmlspecialchars($domainName) ?>?')">✕</button>
+                                            </form>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if (!empty($domainDkim)): ?>
+                                    <details>
+                                        <summary>🔐 DKIM-подписи (<?= count($domainDkim) ?>)</summary>
+                                        <?php foreach ($domainDkim as $sig): ?>
+                                            <div style="border: 1px solid #ddd; padding: 10px; margin: 8px 0; border-radius: 4px; background: #fafafa;">
+                                                <div style="margin-bottom: 6px;">
+                                                    <strong>Алгоритм:</strong> <?= htmlspecialchars($sig['algorithm']) ?>
+                                                </div>
+                                                <form method="post" class="inline-form" style="margin-bottom: 6px;">
+                                                    <input type="hidden" name="action" value="update_dkim_selector">
+                                                    <input type="hidden" name="server_id" value="<?= $serverId ?>">
+                                                    <input type="hidden" name="signature_id" value="<?= htmlspecialchars($sig['id']) ?>">
+                                                    <label style="min-width: 80px;">Selector:</label>
+                                                    <input type="text" name="selector" value="<?= htmlspecialchars($sig['selector']) ?>">
+                                                    <button type="submit">Сменить selector</button>
+                                                </form>
+                                                <form method="post" class="inline-form">
+                                                    <input type="hidden" name="action" value="update_dkim_headers">
+                                                    <input type="hidden" name="server_id" value="<?= $serverId ?>">
+                                                    <input type="hidden" name="signature_id" value="<?= htmlspecialchars($sig['id']) ?>">
+                                                    <label style="min-width: 80px;">Headers:</label>
+                                                    <input type="text" name="headers" value="<?= htmlspecialchars(implode(', ', $sig['headers'])) ?>">
+                                                    <button type="submit">Сохранить</button>
+                                                </form>
+                                                <form method="post" style="display:inline; margin-top: 5px;">
+                                                    <input type="hidden" name="action" value="delete_dkim">
+                                                    <input type="hidden" name="server_id" value="<?= $serverId ?>">
+                                                    <input type="hidden" name="signature_id" value="<?= htmlspecialchars($sig['id']) ?>">
+                                                    <button type="submit" class="danger" style="padding: 4px 10px; font-size: 12px;" onclick="return confirm('Удалить DKIM-подпись <?= htmlspecialchars($sig['selector']) ?>?')">Удалить подпись</button>
+                                                </form>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </details>
+                                <?php endif; ?>
+
+                                <?php if (!empty($data['certs'])): ?>
+                                    <details>
+                                        <summary>🔒 TLS-сертификаты (<?= count($data['certs']) ?>)</summary>
+                                        <table style="margin-top: 5px;">
+                                            <tr><th>SAN</th><th>Действует до</th><th>Issuer</th><th>Действия</th></tr>
+                                            <?php foreach ($data['certs'] as $cert): ?>
+                                                <tr>
+                                                    <td><?= htmlspecialchars(implode(', ', $cert['subjectAlternativeNames'])) ?></td>
+                                                    <td><?= htmlspecialchars($cert['notValidAfter']) ?></td>
+                                                    <td class="muted"><?= htmlspecialchars($cert['issuer']) ?></td>
+                                                    <td>
+                                                        <form method="post" style="margin: 0;">
+                                                            <input type="hidden" name="action" value="delete_certificate">
+                                                            <input type="hidden" name="server_id" value="<?= $serverId ?>">
+                                                            <input type="hidden" name="cert_id" value="<?= htmlspecialchars($cert['id']) ?>">
+                                                            <button type="submit" class="danger" style="padding: 2px 8px; font-size: 12px;" onclick="return confirm('Удалить сертификат <?= htmlspecialchars(implode(', ', $cert['subjectAlternativeNames'])) ?>?')">✕</button>
+                                                        </form>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </table>
+                                    </details>
+                                <?php endif; ?>
+
+                                <?php if (!empty($data['strategies'])): ?>
+                                    <details>
+                                        <summary>📤 Outbound Strategy (<?= count($data['strategies']) ?>)</summary>
+                                        <table style="margin-top: 5px;">
+                                            <tr><th>Название</th><th>EHLO</th><th>Source IPs</th></tr>
+                                            <?php foreach ($data['strategies'] as $st): ?>
+                                                <tr>
+                                                    <td><?= htmlspecialchars($st['name']) ?></td>
+                                                    <td><?= htmlspecialchars($st['ehlo']) ?></td>
+                                                    <td class="muted">
+                                                        <?php if (empty($st['sourceIps'])): ?>
+                                                            —
+                                                        <?php else: ?>
+                                                            <?php foreach ($st['sourceIps'] as $ipEntry): ?>
+                                                                <div><?= htmlspecialchars($ipEntry['ip']) ?></div>
+                                                            <?php endforeach; ?>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </table>
+                                    </details>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <form method="post" style="margin: 0;">
+                                    <input type="hidden" name="action" value="delete_domain">
+                                    <input type="hidden" name="server_id" value="<?= $serverId ?>">
+                                    <input type="hidden" name="domain_id" value="<?= htmlspecialchars($domainId) ?>">
+                                    <button type="submit" class="danger" onclick="return confirm('Удалить домен <?= htmlspecialchars($domainName) ?>? Будут удалены: все ящики, все DKIM-подписи и сам домен. Это необратимо.')">Удалить домен</button>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </table>
+            <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
+<?php endif; ?>
+
+
+╔══ FILE: ./views/layout.php ══╗
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Панель управления Stalwart</title>
+    <style>
+        body { font-family: Arial; max-width: 1200px; margin: 30px auto; padding: 20px; background: #f9f9f9; }
+        h1 { color: #005667; margin-bottom: 5px; }
+        .tabs { display: flex; gap: 5px; margin: 20px 0; border-bottom: 2px solid #ddd; }
+        .tabs a { padding: 10px 20px; text-decoration: none; color: #333; background: #eee; border-radius: 6px 6px 0 0; }
+        .tabs a.active { background: #005667; color: white; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.08); margin-bottom: 20px; }
+        h2 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 5px; margin-top: 0; }
+        h3 { color: #005667; margin-top: 25px; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { padding: 8px 10px; border: 1px solid #ddd; text-align: left; vertical-align: top; }
+        th { background: #f5f5f5; }
+        input[type=text], input[type=password], select { padding: 8px; width: 100%; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 9px 18px; background: #005667; color: white; border: none; cursor: pointer; border-radius: 4px; margin-right: 5px; margin-top: 5px; }
+        button:hover { background: #003d47; }
+        button.danger { background: #b71c1c; }
+        button.danger:hover { background: #7f0000; }
+        button.primary { background: #f9a825; color: #333; }
+        button.primary:hover { background: #c17900; }
+        .msg { padding: 12px; border-radius: 4px; margin-bottom: 20px; border-left: 4px solid #4caf50; background: #e8f5e9; }
+        .msg.error { border-left-color: #f44336; background: #ffebee; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .badge.primary { background: #fff8e1; color: #f57f17; border: 1px solid #f9a825; }
+        .badge.ok { background: #e8f5e9; color: #2e7d32; }
+        .badge.err { background: #ffebee; color: #c62828; }
+        .muted { color: #888; font-size: 13px; }
+        details { margin-top: 10px; }
+        summary { cursor: pointer; color: #005667; font-weight: bold; padding: 5px 0; }
+        .inline-form { display: flex; gap: 5px; align-items: center; }
+        .inline-form input[type=text] { flex: 1; }
+    </style>
+</head>
+<body>
+    <h1>📬 Панель управления Stalwart</h1>
+    <p class="muted">
+        Серверов: <strong><?= count($servers) ?></strong>
+        <?php if ($primaryServer): ?>
+            | Основной: <strong><?= htmlspecialchars($primaryServer['name']) ?></strong>
+        <?php endif; ?>
+    </p>
+
+    <?php if ($flash): ?>
+        <div class="msg <?= ($flash['type'] ?? 'success') === 'error' ? 'error' : '' ?>"><?= $flash['message'] ?></div>
+    <?php endif; ?>
+
+    <div class="tabs">
+        <a href="?tab=overview" class="<?= $activeTab === 'overview' ? 'active' : '' ?>">📊 Обзор</a>
+        <a href="?tab=servers"  class="<?= $activeTab === 'servers'  ? 'active' : '' ?>">🖥️ Серверы</a>
+        <a href="?tab=domains"  class="<?= $activeTab === 'domains'  ? 'active' : '' ?>">🌐 Домены и ящики</a>
+
+    </div>
+
+    <?php require __DIR__ . "/{$activeTab}.php"; ?>
+</body>
+</html>
+
+
+╔══ FILE: ./views/overview.php ══╗
+<div class="card">
+    <h2>Обзор</h2>
+    <?php if (empty($servers)): ?>
+        <p>Серверов пока нет. Перейдите на вкладку <a href="?tab=servers">Серверы</a> и добавьте.</p>
+    <?php else: ?>
+        <table>
+            <tr><th>Сервер</th><th>URL</th><th>Доменов</th><th>Ящиков</th><th>Статус</th></tr>
+            <?php foreach ($serverData as $id => $data): ?>
+                <tr>
+                    <td>
+                        <?= htmlspecialchars($data['server']['name']) ?>
+                        <?php if (!empty($data['server']['is_primary'])): ?>
+                            <span class="badge primary">⭐ основной</span>
+                        <?php endif; ?>
+                    </td>
+                    <td><?= htmlspecialchars($data['server']['api_url']) ?></td>
+                    <td><?= $data['error'] ? '—' : count($data['domains']) ?></td>
+                    <td><?= count($data['accounts']) ?></td>
+                    <td>
+                        <?php if ($data['error']): ?>
+                            <span class="badge err">ошибка</span>
+                        <?php else: ?>
+                            <span class="badge ok">ок</span>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    <?php endif; ?>
+</div>
+
+
+╔══ FILE: ./views/servers.php ══╗
+<?php
+$allSnapshots = [];
+try {
+    $allSnapshots = SnapshotStorage::getAll();
+} catch (Exception $e) {
+    $allSnapshots = [];
+}
+?>
+
+<!-- ============ ШАГ 1: SSH ============ -->
+<div class="card" style="border:2px solid #005667;">
+    <h2>🔑 Шаг 1: Подключение к серверу по SSH</h2>
+    <p class="muted">Панель подключится по SSH, сгенерирует ключ и сохранит его в БД. API-данные Stalwart появятся позже — после установки и прохождения мастера.</p>
+    <form method="post">
+        <input type="hidden" name="action" value="setup_ssh">
+        <table>
+            <tr><td>Название сервера</td><td><input type="text" name="server_name" placeholder="Stalwart RU-1" required></td></tr>
+            <tr><td>SSH Host (IP)</td><td><input type="text" name="ssh_host" placeholder="166.88.253.44" required></td></tr>
+            <tr><td>SSH Port</td><td><input type="text" name="ssh_port" value="22" required></td></tr>
+            <tr><td>SSH Пользователь</td><td><input type="text" name="ssh_user" value="root" required></td></tr>
+            <tr><td>SSH Пароль</td><td><input type="password" name="ssh_password" placeholder="Текущий пароль root" required></td></tr>
+        </table>
+        <button type="submit" class="primary">🔑 Подключить и получить ключ</button>
+    </form>
+</div>
+
+<!-- ============ СПИСОК СЕРВЕРОВ ============ -->
+<div class="card">
+    <h2>🖥️ Подключённые серверы (<?= count($servers ?? []) ?>)</h2>
+    <?php if (empty($servers)): ?>
+        <p class="muted">Серверов пока нет. Подключи первый выше.</p>
+    <?php else: ?>
+        <table>
+            <tr><th>ID</th><th>Название</th><th>SSH</th><th>Статус</th><th>Действия</th></tr>
+            <?php foreach ($servers as $s): ?>
+                <?php $deployStatus = $s['deploy_status'] ?? 'idle'; ?>
+                <tr>
+                    <td><?= $s['id'] ?></td>
+                    <td><?= htmlspecialchars($s['name']) ?> <?= !empty($s['is_primary']) ? '⭐' : '' ?></td>
+                    <td>
+                        <?php if (!empty($s['ssh_configured'])): ?>
+                            <span class="badge ok">✅ <?= htmlspecialchars($s['ssh_host'] ?? '') ?></span>
+                        <?php else: ?>
+                            <span class="badge err">❌</span>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if ($deployStatus === 'bootstrap'): ?>
+                            <span class="badge" style="background:#fff8e1;">⏳ Bootstrap</span>
+                        <?php elseif ($deployStatus === 'ready'): ?>
+                            <span class="badge ok">✅ Готов</span>
+                        <?php elseif ($deployStatus === 'ssh_only'): ?>
+                            <span class="badge">🔑 SSH</span>
+                        <?php else: ?>
+                            <span class="muted">—</span>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <form method="post" style="display:inline">
+                            <input type="hidden" name="action" value="test_server">
+                            <input type="hidden" name="id" value="<?= $s['id'] ?>">
+                            <button type="submit">Проверить</button>
+                        </form>
+                        <?php if (empty($s['is_primary'])): ?>
+                            <form method="post" style="display:inline">
+                                <input type="hidden" name="action" value="set_primary">
+                                <input type="hidden" name="id" value="<?= $s['id'] ?>">
+                                <button type="submit" class="primary">⭐</button>
+                            </form>
+                        <?php endif; ?>
+                        <form method="post" style="display:inline">
+                            <input type="hidden" name="action" value="delete_server">
+                            <input type="hidden" name="id" value="<?= $s['id'] ?>">
+                            <button type="submit" class="danger" onclick="return confirm('Удалить сервер?')">🗑️</button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    <?php endif; ?>
+</div>
+
+<!-- ============ ДЕТАЛИ ПО КАЖДОМУ СЕРВЕРУ (IPv6) ============ -->
+<?php foreach ($servers as $s): ?>
+    <?php if (!empty($s['ssh_configured'])): ?>
+        <div class="card">
+            <h2>🖥️ <?= htmlspecialchars($s['name']) ?></h2>
+
+            <!-- Bootstrap Mode -->
+            <?php if (($s['deploy_status'] ?? '') === 'bootstrap' && !empty($s['temp_admin_password'])): ?>
+                <div style="border:2px solid #f9a825; padding:15px; border-radius:6px; background:#fff8e1; margin-bottom:15px;">
+                    <h3 style="margin-top:0;">⏳ Stalwart ожидает завершения настройки</h3>
+                    <p><strong>Ссылка:</strong> <a href="<?= htmlspecialchars($s['admin_url'] ?? '') ?>" target="_blank"><?= htmlspecialchars($s['admin_url'] ?? '') ?></a></p>
+                    <p><strong>Логин:</strong> <code><?= htmlspecialchars($s['temp_admin_user'] ?? 'admin') ?></code></p>
+                    <p><strong>Пароль:</strong> <code style="background:#fff; padding:4px 8px; font-size:16px;"><?= htmlspecialchars($s['temp_admin_password']) ?></code></p>
+                    <details><summary>Как завершить</summary>
+                        <ol>
+                            <li>Открой ссылку выше</li>
+                            <li>Войди с временным паролем</li>
+                            <li>Пройди мастер настройки (5 шагов)</li>
+                            <li>Stalwart покажет <strong>постоянный</strong> логин/пароль</li>
+                            <li>Введи их ниже и нажми «Завершить»</li>
+                        </ol>
+                    </details>
+                    <form method="post" style="margin-top:15px;">
+                        <input type="hidden" name="action" value="finalize_deploy">
+                        <input type="hidden" name="server_id" value="<?= $s['id'] ?>">
+                        <table>
+                            <tr><td>Постоянный логин</td><td><input type="text" name="admin_user" value="admin" required></td></tr>
+                            <tr><td>Постоянный пароль</td><td><input type="text" name="admin_password" required></td></tr>
+                        </table>
+                        <button type="submit" class="primary" onclick="return confirm('Сохранить данные и перезапустить Stalwart?')">✅ Завершить настройку</button>
+                    </form>
+                </div>
+            <?php endif; ?>
+
+            <!-- IPv6 -->
+            <?php
+                $netplanIps = [];
+                try {
+                    $netplanIps = ServerService::getNetplanIps((int)$s['id']);
+                } catch (Exception $e) {
+                    $netplanIps = ['_error' => $e->getMessage()];
+                }
+            ?>
+            <details style="margin-bottom:15px;" open>
+                <summary style="cursor:pointer; color:#005667; font-weight:bold;">🌐 Сетевые IPv6</summary>
+                <?php if (isset($netplanIps['_error'])): ?>
+                    <p class="badge err">Ошибка SSH: <?= htmlspecialchars($netplanIps['_error']) ?></p>
+                <?php elseif (empty($netplanIps)): ?>
+                    <p class="muted">IPv6 не найдены на сервере.</p>
+                <?php else: ?>
+                    <table style="margin-top:8px;">
+                        <tr><th>IPv6 адрес</th><th>Действие</th></tr>
+                        <?php foreach ($netplanIps as $ip): ?>
+                            <?php $ipClean = preg_replace('#/\d+$#', '', $ip); ?>
+                            <tr>
+                                <td><code><?= htmlspecialchars($ip) ?></code></td>
+                                <td>
+                                    <form method="post" style="display:inline; margin:0;">
+                                        <input type="hidden" name="action" value="remove_ipv6">
+                                        <input type="hidden" name="server_id" value="<?= $s['id'] ?>">
+                                        <input type="hidden" name="ipv6" value="<?= htmlspecialchars($ipClean) ?>">
+                                        <button type="submit" class="danger" style="padding:2px 8px; font-size:12px;" onclick="return confirm('Удалить IP <?= htmlspecialchars($ip) ?>?')">✕ Удалить</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </table>
+                <?php endif; ?>
+                <form method="post" style="margin-top:10px;">
+                    <input type="hidden" name="action" value="add_ipv6">
+                    <input type="hidden" name="server_id" value="<?= $s['id'] ?>">
+                    <table>
+                        <tr><td>Новый IPv6</td><td><input type="text" name="ipv6" placeholder="2605:e440:26::16" required></td></tr>
+                    </table>
+                    <button type="submit">➕ Добавить IPv6</button>
+                </form>
+            </details>
+
+            <!-- SSH переподключение -->
+            <details style="margin-bottom:15px;">
+                <summary style="cursor:pointer; color:#005667; font-weight:bold;">🔑 Переподключить SSH</summary>
+                <form method="post" style="margin-top:10px;">
+                    <input type="hidden" name="action" value="setup_ssh">
+                    <input type="hidden" name="server_name" value="<?= htmlspecialchars($s['name']) ?>">
+                    <input type="hidden" name="ssh_host" value="<?= htmlspecialchars($s['ssh_host'] ?? '') ?>">
+                    <input type="hidden" name="ssh_port" value="<?= (int)($s['ssh_port'] ?? 22) ?>">
+                    <input type="hidden" name="ssh_user" value="<?= htmlspecialchars($s['ssh_user'] ?? 'root') ?>">
+                    <table>
+                        <tr><td>Новый пароль root</td><td><input type="password" name="ssh_password" required></td></tr>
+                    </table>
+                    <button type="submit">🔑 Переподключить</button>
+                </form>
+            </details>
+        </div>
+    <?php endif; ?>
+<?php endforeach; ?>
+
+<!-- ============ СОЗДАТЬ SNAPSHOT ============ -->
+<?php if (!empty($servers)): ?>
+<div class="card">
+    <h2>📸 Создать snapshot</h2>
+    <form method="post">
+        <input type="hidden" name="action" value="create_snapshot">
+        <table>
+            <tr><td>Сервер</td><td>
+                <select name="server_id" required>
+                    <option value="">— Выберите —</option>
+                    <?php foreach ($servers as $s): ?>
+                        <option value="<?= $s['id'] ?>"><?= htmlspecialchars($s['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </td></tr>
+            <tr><td>Тип</td><td>
+                <select name="snapshot_type">
+                    <option value="bare">🍃 Голый (для переноса)</option>
+                    <option value="full">📦 Полный (для бэкапа)</option>
+                </select>
+            </td></tr>
+            <tr><td>Имя (опционально)</td><td><input type="text" name="snapshot_name" placeholder="my_snapshot"></td></tr>
+        </table>
+        <button type="submit">📸 Создать snapshot</button>
+    </form>
+</div>
+<?php endif; ?>
+
+<!-- ============ ВСЕ SNAPSHOTS ============ -->
+<div class="card">
+    <h2>📋 Все snapshots (<?= count($allSnapshots) ?>)</h2>
+    <?php if (empty($allSnapshots)): ?>
+        <p class="muted">Snapshots пока нет.</p>
+    <?php else: ?>
+        <table>
+            <tr><th>ID</th><th>Имя</th><th>Сервер</th><th>Тип</th><th>Размер</th><th>Создан</th><th>Действия</th></tr>
+            <?php foreach ($allSnapshots as $snap): ?>
+                <tr>
+                    <td><?= $snap['id'] ?></td>
+                    <td><strong><?= htmlspecialchars($snap['name']) ?></strong></td>
+                    <td><?= htmlspecialchars($snap['server_name'] ?? '—') ?></td>
+                    <td><?= $snap['type'] === 'bare' ? '🍃 Голый' : '📦 Полный' ?></td>
+                    <td><?= number_format($snap['size_bytes']) ?> байт</td>
+                    <td class="muted"><?= htmlspecialchars($snap['created_at']) ?></td>
+                    <td>
+                        <form method="post" style="display:inline">
+                            <input type="hidden" name="action" value="delete_snapshot">
+                            <input type="hidden" name="snapshot_id" value="<?= $snap['id'] ?>">
+                            <button type="submit" class="danger" style="padding:2px 8px; font-size:12px;" onclick="return confirm('Удалить snapshot?')">🗑️</button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    <?php endif; ?>
+</div>
+
+<!-- ============ РАЗВЕРНУТЬ STALWART ============ -->
+<div class="card" style="border:2px solid #f9a825;">
+    <h2>🚀 Шаг 2: Развернуть Stalwart</h2>
+    <p class="muted">Панель установит Stalwart, создаст директории, запустит в Bootstrap Mode.</p>
+    <form method="post">
+        <input type="hidden" name="action" value="deploy_stalwart">
+        <table>
+            <tr><td>SSH Host</td><td><input type="text" name="ssh_host" placeholder="1.2.3.4" required></td></tr>
+            <tr><td>SSH Port</td><td><input type="text" name="ssh_port" value="22" required></td></tr>
+            <tr><td>SSH Пользователь</td><td><input type="text" name="ssh_user" value="root" required></td></tr>
+            <tr><td>SSH Пароль</td><td><input type="password" name="ssh_password" placeholder="Только если ключ не сохранён"></td></tr>
+            <tr><td>Применить snapshot</td><td>
+                <select name="snapshot_id">
+                    <option value="0">— Не применять —</option>
+                    <?php foreach ($allSnapshots as $snap): ?>
+                        <option value="<?= $snap['id'] ?>">
+                            [<?= $snap['type'] === 'bare' ? '🍃' : '📦' ?>] <?= htmlspecialchars($snap['name']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </td></tr>
+        </table>
+        <button type="submit" class="primary" onclick="return confirm('Развернуть Stalwart?')">🚀 Развернуть</button>
+    </form>
+</div>
+
+
+Script done on 2026-10-14 18:19:33+05:00 [COMMAND_EXIT_CODE="0"]
